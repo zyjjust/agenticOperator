@@ -3,11 +3,16 @@
 // Outputs the schema in resume-agent-engineering-spec §3.2 (RESUME_PROCESSED):
 //   { candidate, candidate_expectation, resume, runtime }
 //
-// Two modes:
-//   - Real: OpenAI gpt-4o-mini structured-output. Requires OPENAI_API_KEY.
-//   - Stub: deterministic regex-based extraction. Always available.
-// Mode is chosen automatically based on env; the result carries `mode`
-// so the UI can flag which path produced the data.
+// Three modes (auto-chosen by env priority):
+//   1. new-api gateway   — AI_BASE_URL + AI_API_KEY + AI_MODEL set (any
+//                          OpenAI-compatible gateway, e.g. the company
+//                          new-api at 10.100.0.70:3010/v1 with
+//                          google/gemini-3-flash-preview)
+//   2. OpenAI direct     — OPENAI_API_KEY set, model = gpt-4o-mini
+//   3. Deterministic stub — fallback (no LLM, regex over text)
+//
+// Result carries { mode, modelUsed } so the UI can flag which path
+// produced the data.
 
 import OpenAI from "openai";
 
@@ -59,34 +64,67 @@ export type ParsedResume = {
 
 export type ExtractResult = {
   parsed: ParsedResume;
-  mode: "openai" | "stub";
+  mode: "new-api" | "openai" | "stub";
   modelUsed: string;
   duration_ms: number;
+  fallback_reason?: string; // present only when an LLM was attempted but fell back
 };
-
-const OPENAI_MODEL = "gpt-4o-mini";
 
 const SYSTEM_PROMPT = `You parse Chinese resumes into a strict JSON schema.
 
 Output JSON with exactly these top-level keys: candidate, candidate_expectation, resume, runtime.
 
 candidate fields: name, mobile, email, gender, birth_date (YYYY-MM-DD), current_location, highest_acquired_degree, work_years (integer), current_company, current_title, skills (string[]).
-candidate_expectation fields: expected_salary_monthly_min (number, in K i.e. 30 = 30K=30000), expected_salary_monthly_max (number), expected_cities (string[]), expected_industries (string[]), expected_roles (string[]), expected_work_mode (string).
+candidate_expectation fields: expected_salary_monthly_min (number, in CNY e.g. 35000), expected_salary_monthly_max (number), expected_cities (string[]), expected_industries (string[]), expected_roles (string[]), expected_work_mode (string).
 resume fields: summary (string), skills_extracted (string[]), work_history ({title, company, startDate, endDate, description}[]), education_history ({degree, field, institution, graduationYear}[]), project_history (any[], default []).
 runtime fields: current_title, current_company (mirror candidate fields).
 
 Use null for missing values. Use [] for missing lists. Do NOT invent data.
 Output JSON only, no prose.`;
 
-export async function extractResume(text: string): Promise<ExtractResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const startedAt = Date.now();
+type GatewayConfig = {
+  baseURL: string;
+  apiKey: string;
+  model: string;
+  mode: "new-api" | "openai";
+};
 
-  if (apiKey) {
+function pickGateway(): GatewayConfig | null {
+  // Priority 1: new-api or any OpenAI-compatible gateway
+  if (process.env.AI_BASE_URL && process.env.AI_API_KEY) {
+    return {
+      baseURL: process.env.AI_BASE_URL,
+      apiKey: process.env.AI_API_KEY,
+      model: process.env.AI_MODEL || "google/gemini-3-flash-preview",
+      mode: "new-api",
+    };
+  }
+  // Priority 2: OpenAI direct
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      baseURL: "https://api.openai.com/v1",
+      apiKey: process.env.OPENAI_API_KEY,
+      model: "gpt-4o-mini",
+      mode: "openai",
+    };
+  }
+  return null;
+}
+
+export async function extractResume(text: string): Promise<ExtractResult> {
+  const startedAt = Date.now();
+  const gateway = pickGateway();
+
+  if (gateway) {
     try {
-      const openai = new OpenAI({ apiKey });
-      const completion = await openai.chat.completions.create({
-        model: OPENAI_MODEL,
+      const client = new OpenAI({
+        baseURL: gateway.baseURL,
+        apiKey: gateway.apiKey,
+        // The new-api gateway can be slow on cold paths; raise timeout.
+        timeout: 60_000,
+      });
+      const completion = await client.chat.completions.create({
+        model: gateway.model,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: text.slice(0, 10_000) },
@@ -95,22 +133,30 @@ export async function extractResume(text: string): Promise<ExtractResult> {
         temperature: 0,
       });
       const raw = completion.choices[0]?.message?.content ?? "{}";
-      const parsed = normalizeParsed(JSON.parse(raw));
+      const parsed = normalizeParsed(JSON.parse(stripCodeFence(raw)));
       return {
         parsed,
-        mode: "openai",
-        modelUsed: OPENAI_MODEL,
+        mode: gateway.mode,
+        modelUsed: gateway.model,
         duration_ms: Date.now() - startedAt,
       };
     } catch (e) {
+      const reason = (e as Error).message;
       console.warn(
-        `[resume-extractor] OpenAI call failed (${(e as Error).message}); falling back to stub`,
+        `[resume-extractor] ${gateway.mode} (${gateway.model}) failed: ${reason} — falling back to stub`,
       );
-      // fall through
+      const parsed = extractStub(text);
+      return {
+        parsed,
+        mode: "stub",
+        modelUsed: "deterministic-regex",
+        duration_ms: Date.now() - startedAt,
+        fallback_reason: `${gateway.mode}/${gateway.model}: ${reason}`,
+      };
     }
   }
 
-  // Stub: deterministic regex-based extraction. Good enough for demo.
+  // Stub: deterministic regex-based extraction. No LLM keys configured.
   const parsed = extractStub(text);
   return {
     parsed,
@@ -118,6 +164,13 @@ export async function extractResume(text: string): Promise<ExtractResult> {
     modelUsed: "deterministic-regex",
     duration_ms: Date.now() - startedAt,
   };
+}
+
+// Some gateways wrap responses in ```json ... ``` even with response_format
+// set. Strip it before JSON.parse.
+function stripCodeFence(s: string): string {
+  const m = s.trim().match(/^```(?:json)?\s*([\s\S]+?)\s*```$/);
+  return m ? m[1] : s;
 }
 
 // ─── Stub implementation ─────────────────────────────────────────────
