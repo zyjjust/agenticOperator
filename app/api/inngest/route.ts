@@ -9,7 +9,8 @@
 // Prod: replace with Inngest Cloud or self-hosted Inngest server.
 
 import { serve } from "inngest/next";
-import { inngest, allFunctions } from "@/server/inngest/client";
+import { inngest } from "@/server/inngest/client";
+import { allFunctions } from "@/server/inngest/functions";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,

@@ -6,7 +6,12 @@ export default defineConfig({
     environment: 'happy-dom',
     globals: true,
     include: ['**/*.test.ts', '**/*.test.tsx'],
-    exclude: ['node_modules', '.next', 'Action_and_Event_Manager'],
+    exclude: [
+      '**/node_modules/**',
+      '.next',
+      'Action_and_Event_Manager',
+      'resume-parser-agent',
+    ],
   },
   resolve: {
     alias: {
