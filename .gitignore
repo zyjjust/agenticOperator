@@ -60,3 +60,10 @@ logs/
 
 # package manager
 package-lock.json.bak
+
+# P3: SQLite single file + Prisma + Inngest
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+.inngest/

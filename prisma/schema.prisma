@@ -1,0 +1,214 @@
+// AO unified Prisma schema (P3 foundation)
+//
+// Design principles (from spec):
+// - Single SQLite file `data/ao.db` for dev (env-overridable for prod Postgres).
+// - Only runtime/audit/gateway models from EM (Q1: no Editor).
+// - WS workflow models, minus Copilot (Q2) and test/studio/simulation tables.
+// - All Postgres-specific (@db.Text, @db.VarChar(N), arrays) stripped for SQLite.
+// - JSON columns stored as TEXT, parsed by service layer.
+//
+// P3 progress: foundation (~10 of ~25 final tables). Remaining tables and
+// migration plan documented in docs/superpowers/specs/2026-04-27-ao-int-p3-monorepo-merge-design.md §4.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// =====================================================================
+// WS — Workflow runtime
+// =====================================================================
+
+model WorkflowRun {
+  id               String    @id @default(cuid())
+  triggerEvent     String
+  triggerData      String    // JSON
+  // status values per spec §13: running | suspended | timed_out | completed
+  // | failed | paused | interrupted
+  status           String    @default("running")
+  startedAt        DateTime  @default(now())
+  completedAt      DateTime?
+  lastActivityAt   DateTime  @default(now())
+  suspendedReason  String?
+
+  steps            WorkflowStep[]
+  activities       AgentActivity[]
+
+  @@index([status])
+  @@index([startedAt])
+  @@index([lastActivityAt])
+}
+
+model WorkflowStep {
+  id          String    @id @default(cuid())
+  runId       String
+  run         WorkflowRun @relation(fields: [runId], references: [id])
+  nodeId      String
+  stepName    String
+  status      String    // pending | running | completed | failed | retrying
+  input       String?   // JSON
+  output      String?   // JSON
+  error       String?
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMs  Int?
+
+  @@index([runId])
+  @@index([nodeId])
+  @@index([status])
+}
+
+model AgentActivity {
+  id        String   @id @default(cuid())
+  runId     String?
+  run       WorkflowRun? @relation(fields: [runId], references: [id])
+  nodeId    String
+  agentName String
+  type      String
+  narrative String
+  metadata  String?  // JSON
+  createdAt DateTime @default(now())
+
+  @@index([runId])
+  @@index([nodeId])
+  @@index([agentName])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model HumanTask {
+  id            String    @id @default(cuid())
+  runId         String
+  nodeId        String
+  nodeName      String
+  title         String
+  payload       String    // JSON
+  aiOpinion     String?   // JSON
+  status        String    @default("pending") // pending | approved | rejected
+  assignee      String?
+  result        String?   // JSON
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+  deadline      DateTime?
+  approveEvent  String?
+  rejectEvent   String?
+  eventData     String?   // JSON
+  resolvedBy    String?
+
+  @@index([runId])
+  @@index([status])
+  @@index([nodeId])
+  @@index([assignee])
+}
+
+model ChatbotSession {
+  id                 String    @id @default(cuid())
+  sessionType        String
+  status             String    @default("open")
+  correlationId      String
+  humanTaskId        String?
+  hitlRequestId      String?
+  parentSessionId    String?
+  clientId           String?
+  assignedTo         String?
+  aiAnalysis         String?   // JSON
+  questions          String    // JSON
+  collectedAnswers   String    @default("{}")
+  conversationLog    String    @default("[]")
+  resolvedPath       String?
+  resolvedBy         String?
+  resolvedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deadline           DateTime?
+
+  @@index([correlationId])
+  @@index([status])
+  @@index([humanTaskId])
+}
+
+// Living KB rules (used by processResume.rule etc.)
+model CandidateLock {
+  id           String   @id @default(cuid())
+  candidateId  String
+  clientId     String
+  jdId         String?
+  recruiterId  String
+  expiresAt    DateTime
+  reason       String?
+  releasedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([candidateId, clientId])
+  @@index([clientId, expiresAt])
+}
+
+model Blacklist {
+  id           String   @id @default(cuid())
+  candidateId  String
+  clientId     String?
+  reason       String
+  addedBy      String
+  createdAt    DateTime @default(now())
+
+  @@index([candidateId, clientId])
+}
+
+// =====================================================================
+// EM — Audit & DLQ (runtime only, no Editor)
+// =====================================================================
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  eventName    String
+  traceId      String
+  payload      String   // JSON
+  payloadDigest String
+  source       String   // 'ws' | 'em' | 'external'
+  createdAt    DateTime @default(now())
+
+  @@index([eventName])
+  @@index([traceId])
+  @@index([createdAt])
+}
+
+model DLQEntry {
+  id        String   @id @default(cuid())
+  eventName String
+  reason    String
+  payload   String   // JSON
+  retries   Int      @default(0)
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+
+  @@index([eventName])
+  @@index([resolvedAt])
+}
+
+model DedupCache {
+  id          String   @id @default(cuid())
+  dedupKey    String   @unique
+  eventName   String
+  firstSeenAt DateTime @default(now())
+  hitCount    Int      @default(1)
+
+  @@index([eventName])
+  @@index([firstSeenAt])
+}
+
+// =====================================================================
+// REMAINING TABLES (P3 todo, see spec §4.2):
+// =====================================================================
+// From WS:        AgentEpisode, AgentEpisodeStats, AgentPattern, AgentSpan,
+//                 AgentBlackboardEntry, AgentConfig, AgentConfigHistory
+// From EM:        EventDefinition (ACTIVE only, read-only cache),
+//                 GatewayFilterRule, OutboundEvent, RaasMessage,
+//                 RejectedMessage, IngestionConfig, HealthIncident,
+//                 ExecutionTrace
+//
+// Add these as the corresponding service modules are ported in P3 Chunks
+// 2-5. Each addition runs `npm run db:push` and a migration test to verify
+// CRUD on the new table works against existing data.
