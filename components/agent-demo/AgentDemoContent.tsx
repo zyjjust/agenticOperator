@@ -28,10 +28,9 @@ const AGENT_NAME = "processResume";
 const POLL_MS = 2000;
 
 const FILE_PRESETS = [
-  { label: "Java 后端 (王峰)",    path: "/storage/resumes/wang-feng_java_2024.pdf" },
-  { label: "前端 (李晓红)",       path: "/storage/resumes/li-xiaohong_frontend_2024.pdf" },
-  { label: "数据科学 (张伟)",     path: "/storage/resumes/zhang-wei_data_2024.pdf" },
-  { label: "UE5 技术美术 (刘洋)", path: "/storage/resumes/liu-yang_ue5_2024.pdf" },
+  { label: "Java 后端 · 王峰 (sample)",      path: "wang-feng-java.txt" },
+  { label: "前端 · 李晓红 (sample)",         path: "li-xiaohong-frontend.txt" },
+  { label: "数据科学 · 张伟 (sample)",       path: "zhang-wei-data.txt" },
 ];
 
 const CHANNEL_PRESETS = ["BOSS直聘", "智联招聘", "前程无忧", "猎聘"];
@@ -228,18 +227,19 @@ function TriggerPane({
               POST → <span className="mono">/api/test/trigger-resume-uploaded</span>
             </li>
             <li>
-              端点{" "}
               <span className="mono">inngest.send(&quot;RESUME_DOWNLOADED&quot;, …)</span>
             </li>
             <li>
-              Inngest dev (<span className="mono">:8288</span>) 路由到{" "}
-              <span className="mono">{AGENT_NAME}</span>
+              Inngest dev → <span className="mono">{AGENT_NAME}</span> agent
             </li>
             <li>
-              Agent: 写 log → parse stub (250ms) → emit{" "}
+              Agent 4 步：log received → 读 file 抽 text → LLM/stub 抽结构化字段 → emit{" "}
               <span className="mono">RESUME_PROCESSED</span>
             </li>
-            <li>右侧"日志"面板每 2 秒拉一次，新行会高亮</li>
+            <li>
+              LLM mode：<span className="mono">OPENAI_API_KEY</span> 设了走 OpenAI；否则走确定性 stub
+            </li>
+            <li>右侧"日志"面板 2 秒轮询，新行会高亮</li>
           </ol>
         </div>
       </div>
@@ -306,6 +306,7 @@ function ActivityPane({
 }) {
   const counts = {
     received: activity.filter((r) => r.type === "event_received").length,
+    extracted: activity.filter((r) => r.type === "tool").length,
     parsed: activity.filter((r) => r.type === "agent_complete").length,
     emitted: activity.filter((r) => r.type === "event_emitted").length,
   };
@@ -322,10 +323,11 @@ function ActivityPane({
           ao.db
         </Badge>
       </CardHead>
-      <div className="grid border-b border-line" style={{ gridTemplateColumns: "1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
+      <div className="grid border-b border-line" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
         <PhaseCount label="1 · 收到 received" count={counts.received} color="var(--c-info)" />
-        <PhaseCount label="2 · 解析 parsed" count={counts.parsed} color="var(--c-warn)" />
-        <PhaseCount label="3 · 发出 published" count={counts.emitted} color="var(--c-ok)" />
+        <PhaseCount label="2 · 提取 extracted" count={counts.extracted} color="var(--c-warn)" />
+        <PhaseCount label="3 · 解析 parsed" count={counts.parsed} color="var(--c-warn)" />
+        <PhaseCount label="4 · 发出 published" count={counts.emitted} color="var(--c-ok)" />
       </div>
       <div
         className="overflow-auto"
@@ -402,27 +404,11 @@ type PhaseInfo = {
 };
 
 function phaseFor(type: string): PhaseInfo {
-  if (type === "event_received") {
-    return {
-      label: "1 · subscribe",
-      color: "var(--c-info)",
-      badgeVariant: "info",
-    };
-  }
-  if (type === "agent_complete") {
-    return {
-      label: "2 · parse",
-      color: "var(--c-warn)",
-      badgeVariant: "warn",
-    };
-  }
-  if (type === "event_emitted") {
-    return {
-      label: "3 · publish",
-      color: "var(--c-ok)",
-      badgeVariant: "ok",
-    };
-  }
+  if (type === "event_received") return { label: "1 · subscribe", color: "var(--c-info)", badgeVariant: "info" };
+  if (type === "tool")           return { label: "2 · extract",   color: "var(--c-warn)", badgeVariant: "warn" };
+  if (type === "agent_complete") return { label: "3 · parse",     color: "var(--c-warn)", badgeVariant: "warn" };
+  if (type === "event_emitted")  return { label: "4 · publish",   color: "var(--c-ok)",   badgeVariant: "ok" };
+  if (type === "agent_error")    return { label: "✗ error",      color: "var(--c-err)",  badgeVariant: "default" };
   return { label: type, color: "var(--c-line)", badgeVariant: "default" };
 }
 
@@ -431,13 +417,20 @@ function summaryFor(type: string, meta: Record<string, unknown>): string {
     const paths = (meta.resume_file_paths as string[] | undefined) ?? [];
     return `trigger=${String(meta.trigger ?? "—")} · jd=${String(meta.job_requisition_id ?? "—")} · channel=${String(meta.channel ?? "—")} · file=${paths[0] ?? "—"}`;
   }
+  if (type === "tool") {
+    return `chars=${String(meta.chars ?? "—")} · source=${String(meta.source ?? "—")}`;
+  }
   if (type === "agent_complete") {
-    const parsed = (meta.parsed ?? {}) as Record<string, unknown>;
-    const tags = Array.isArray(parsed.skill_tags) ? (parsed.skill_tags as string[]).join("、") : "—";
-    return `resume_id=${String(meta.resume_id ?? "—")} · candidate=${String(parsed.name ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")} · skill_tags=[${tags}]`;
+    const parsed = (meta.parsed ?? {}) as { candidate?: { name?: string; skills?: string[] }; resume?: { work_history?: unknown[] } };
+    const cand = parsed.candidate ?? {};
+    const skills = Array.isArray(cand.skills) ? cand.skills.join("、") : "—";
+    return `mode=${String(meta.mode ?? "—")} · candidate=${cand.name ?? "—"} · skills=[${skills}] · jobs=${parsed.resume?.work_history?.length ?? 0}`;
+  }
+  if (type === "agent_error") {
+    return `narrative='${String(meta).slice(0, 60)}'`;
   }
   if (type === "event_emitted") {
-    return `event=${String(meta.event_name ?? "—")} · resume_id=${String(meta.resume_id ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")}`;
+    return `event=${String(meta.event_name ?? "—")} · candidate=${String(meta.candidate_name ?? "—")} · parserVersion=${String(meta.parserVersion ?? "—")}`;
   }
   return JSON.stringify(meta).slice(0, 200);
 }

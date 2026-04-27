@@ -1,0 +1,33 @@
+李晓红
+女 · 1993-08-20 · 深圳
+手机 139-0000-5678 · 邮箱 li.xiaohong@example.com
+
+【个人简介】
+5 年前端开发经验，深度参与字节跳动多个 C 端产品。专注 React 生态、TypeScript、
+前端工程化。期望深圳/远程的高级前端工程师岗位，期望月薪 30-40K。
+
+【工作经历】
+
+字节跳动 · 高级前端工程师 · 2021-06 至今
+- 抖音电商前端核心团队，负责商品详情页性能优化
+- 主导 Next.js 14 App Router 升级，FCP 提升 35%
+- 搭建前端 monorepo + Turbopack 工作流
+- 技术栈：React 19, TypeScript, Next.js, Tailwind CSS
+
+腾讯 · 前端工程师 · 2019-04 至 2021-05
+- QQ 浏览器内嵌活动平台开发
+- 微信小程序业务支持
+- 技术栈：Vue 2/3, JavaScript, Webpack
+
+【教育背景】
+北京邮电大学 · 软件工程 · 本科 · 2015-2019
+
+【技能】
+React, React 19, TypeScript, Next.js, Tailwind CSS, Vite, Turbopack,
+前端工程化, monorepo, CSS-in-JS, Vue, Webpack, Node.js
+
+【期望】
+- 期望职位：高级前端工程师 / 前端架构师
+- 期望城市：深圳、广州、远程
+- 期望薪资：30K-40K/月
+- 工作模式：远程或混合

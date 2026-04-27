@@ -1,47 +1,50 @@
-// processResume — sample agent aligned with the real recruitment workflow.
+// processResume — workflow node 9-1, real implementation.
 //
-// Matches workflow node id="9-1" name="processResume" actor="Agent" in
-// Action_and_Event_Manager/data/workflow_20260330.json. Event names + payload
-// fields follow events_20260330.json verbatim, so the demo uses live business
-// vocabulary (Chinese recruitment domain) not generic stand-in data.
+// Spec source: docs/resume-agent-engineering-spec.md §3.2 + §4
+// Input event:  RESUME_DOWNLOADED { resume_file_paths, job_requisition_id, channel }
+// Output event: RESUME_PROCESSED  with full 4-object payload
 //
-// Spec mapping (leader → real workflow):
-//   "resume uploaded"  → RESUME_DOWNLOADED       (real trigger)
-//   "Received the resume" log line               (verbatim, retained)
-//   "resume parse"     → RESUME_PROCESSED        (real success emit)
+// Steps (per §4.1):
+//   1. fetch-resume-bytes  — read from data/sample-resumes/<name> (POC)
+//                            or accept inline resume_text in event payload
+//   2. extract-text        — pdf-parse for .pdf, raw for .txt
+//   3. extract-structured  — OpenAI gpt-4o-mini if key set, else stub
+//   4. sanity-check        — hasStructuredResumePayload (spec §4.2)
+//   5. emit-resume-processed
 //
-// Validates:
-//   - WS Workflow agent pattern (this IS one of the 22 real WS agents)
-//   - P3 Inngest serve adapter (server/inngest/* → /api/inngest)
-//   - Prisma write path (server/db → ao.db AgentActivity)
-//   - Event emission (step.sendEvent fans out to subscribers)
+// All state writes go to AgentActivity (so /agent-demo UI can render them).
 
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
+import { extractResume, type ParsedResume } from "../../llm/resume-extractor";
 
-// IDs from the canonical workflow JSON.
 const AGENT_ID = "9-1";
 const AGENT_NAME = "processResume";
+const MAPPING_VERSION = "stub-or-openai-2026-04-27";
 
-// Inbound: events_20260330.json → RESUME_DOWNLOADED.event_data
+// Inbound (events_20260330 → RESUME_DOWNLOADED.event_data)
 type ResumeDownloadedData = {
   resume_file_paths: string[];
   job_requisition_id: string;
   channel?: string;
+  resume_text?: string; // POC convenience: pass text inline
 };
 
 export const sampleResumeParserAgent = inngest.createFunction(
   {
     id: AGENT_ID,
     name: "processResume (workflow node 9-1)",
+    retries: 0,
     triggers: [{ event: "RESUME_DOWNLOADED" }],
   },
   async ({ event, step, logger }) => {
     const data = event.data as ResumeDownloadedData;
-    const filePath = data.resume_file_paths?.[0] ?? "";
+    const filePath = data.resume_file_paths?.[0] ?? null;
     const jdId = data.job_requisition_id;
 
-    // ── Phase 1 / 3 — Receipt log (leader's required line, verbatim) ──
+    // ── Step 0 — Receipt log (leader's required line, verbatim) ──
     logger.info(
       `Received the resume — files=${data.resume_file_paths?.length ?? 0} jd=${jdId} channel=${data.channel ?? "—"}`,
     );
@@ -52,22 +55,49 @@ export const sampleResumeParserAgent = inngest.createFunction(
           agentName: AGENT_NAME,
           type: "event_received",
           narrative: "Received the resume",
+          metadata: JSON.stringify({ trigger: "RESUME_DOWNLOADED", ...data }),
+        },
+      });
+    });
+
+    // ── Step 1 — Fetch bytes (or inline text) ──
+    const text = await step.run("fetch-and-extract-text", async () => {
+      if (data.resume_text) {
+        return data.resume_text;
+      }
+      if (filePath) {
+        const abs = resolveSamplePath(filePath);
+        const buf = await fs.readFile(abs);
+        if (filePath.endsWith(".pdf")) {
+          return await extractTextFromPdf(buf);
+        }
+        return buf.toString("utf-8");
+      }
+      throw new Error(
+        "RESUME_DOWNLOADED event must include either resume_text or a readable resume_file_paths[0]",
+      );
+    });
+
+    await step.run("log-extracted", async () => {
+      await prisma.agentActivity.create({
+        data: {
+          nodeId: AGENT_ID,
+          agentName: AGENT_NAME,
+          type: "tool",
+          narrative: `Extracted ${text.length} chars from ${filePath ?? "inline text"}`,
           metadata: JSON.stringify({
-            trigger: "RESUME_DOWNLOADED",
-            ...data,
+            chars: text.length,
+            preview: text.slice(0, 200),
+            source: filePath ?? "inline",
           }),
         },
       });
     });
 
-    // ── Phase 2 / 3 — Parse: deterministic stub. No LLM. 250ms. ───────
-    // Real production swaps this for parseResumeSkill (Gemini Flash).
-    const startedAt = Date.now();
-    const parsed = await step.run("parse-resume", async () => {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      return mockParse(filePath, jdId);
+    // ── Step 2 — Structured extraction (LLM or stub) ──
+    const extracted = await step.run("extract-structured", async () => {
+      return await extractResume(text);
     });
-    const duration_ms = Date.now() - startedAt;
 
     await step.run("log-parsed", async () => {
       await prisma.agentActivity.create({
@@ -75,30 +105,39 @@ export const sampleResumeParserAgent = inngest.createFunction(
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "agent_complete",
-          narrative: `Parse complete in ${duration_ms}ms · ${parsed.skill_tags.length} skill tags · ${parsed.work_experience.length} jobs`,
+          narrative: `Parse complete in ${extracted.duration_ms}ms · ${extracted.parsed.candidate.skills.length} skills · ${extracted.parsed.resume.work_history.length} jobs · mode=${extracted.mode}`,
           metadata: JSON.stringify({
-            resume_id: parsed.resume_id,
-            candidate_id: parsed.candidate_id,
-            duration_ms,
-            parsed,
+            mode: extracted.mode,
+            modelUsed: extracted.modelUsed,
+            duration_ms: extracted.duration_ms,
+            parsed: extracted.parsed,
           }),
         },
       });
     });
 
-    // ── Phase 3 / 3 — Publish RESUME_PROCESSED (real success emit) ─────
+    // ── Step 3 — Sanity check (spec §4.2) ──
+    if (!hasStructuredResumePayload(extracted.parsed)) {
+      await step.run("log-sanity-fail", async () => {
+        await prisma.agentActivity.create({
+          data: {
+            nodeId: AGENT_ID,
+            agentName: AGENT_NAME,
+            type: "agent_error",
+            narrative: "Sanity check failed — no structured fields extracted; not emitting RESUME_PROCESSED",
+            metadata: JSON.stringify({ parsed: extracted.parsed }),
+          },
+        });
+      });
+      throw new Error("hasStructuredResumePayload returned false");
+    }
+
+    // ── Step 4 — Emit RESUME_PROCESSED with full §3.2 schema ──
+    const payload = buildResumeProcessedPayload(data, extracted.parsed);
+
     await step.sendEvent("emit-resume-processed", {
       name: "RESUME_PROCESSED",
-      data: {
-        resume_id: parsed.resume_id,
-        candidate_id: parsed.candidate_id,
-        job_requisition_id: jdId,
-        fix_result: "auto_parsed",
-        skill_tags: parsed.skill_tags,
-        work_experience: parsed.work_experience,
-        education_experience: parsed.education_experience,
-        parsed_at: new Date().toISOString(),
-      },
+      data: payload,
     });
 
     await step.run("log-emitted", async () => {
@@ -107,125 +146,95 @@ export const sampleResumeParserAgent = inngest.createFunction(
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "event_emitted",
-          narrative: "Published RESUME_PROCESSED",
+          narrative: `Published RESUME_PROCESSED · candidate=${extracted.parsed.candidate.name ?? "—"} · skills=${extracted.parsed.candidate.skills.length}`,
           metadata: JSON.stringify({
             event_name: "RESUME_PROCESSED",
-            resume_id: parsed.resume_id,
-            duration_ms,
+            parserVersion: payload.parserVersion,
+            candidate_name: extracted.parsed.candidate.name,
+            duration_ms: extracted.duration_ms,
           }),
         },
       });
     });
 
     logger.info(
-      `[${AGENT_NAME}] published RESUME_PROCESSED — resume_id=${parsed.resume_id} skills=${parsed.skill_tags.length} duration=${duration_ms}ms`,
+      `[${AGENT_NAME}] published RESUME_PROCESSED — candidate=${extracted.parsed.candidate.name} mode=${extracted.mode}`,
     );
 
-    return { resume_id: parsed.resume_id, parsed, duration_ms };
+    return payload;
   },
 );
 
-// ─── Stub parser: deterministic, domain-aligned ──────────────────────
-// Routes to a fixture profile based on the file slug so different inputs
-// look meaningfully different in the UI, without invoking any LLM.
-function mockParse(
-  filePath: string,
-  jdId: string,
-): {
-  resume_id: string;
-  candidate_id: string;
-  name: string;
-  mobile: string;
-  skill_tags: string[];
-  work_experience: { company: string; role: string; years: number }[];
-  education_experience: { school: string; degree: string; major: string }[];
-} {
-  const fileName = filePath.split("/").pop() ?? "unknown.pdf";
-  const slug = fileName.replace(/\.[^.]+$/, "").toLowerCase();
-  const profile = pickProfile(slug);
-  const candidateNumber = Math.abs(hashSlug(slug) % 9000) + 1000;
-  const resume_id = `RES-${jdId}-${candidateNumber}`;
-  const candidate_id = `CAND-${candidateNumber}`;
-
-  return { resume_id, candidate_id, ...profile };
-}
-
-type Profile = {
-  name: string;
-  mobile: string;
-  skill_tags: string[];
-  work_experience: { company: string; role: string; years: number }[];
-  education_experience: { school: string; degree: string; major: string }[];
-};
-
-const PROFILES: Record<string, Profile> = {
-  java: {
-    name: "王峰",
-    mobile: "+86-138-0000-1234",
-    skill_tags: ["Java", "Spring Cloud", "MySQL", "分布式架构", "Kafka", "JVM 调优"],
-    work_experience: [
-      { company: "蚂蚁金服", role: "高级 Java 工程师", years: 4 },
-      { company: "美团", role: "Java 后端工程师", years: 2 },
-    ],
-    education_experience: [
-      { school: "浙江大学", degree: "本科", major: "计算机科学与技术" },
-    ],
-  },
-  frontend: {
-    name: "李晓红",
-    mobile: "+86-139-0000-5678",
-    skill_tags: ["React", "TypeScript", "Next.js", "Tailwind CSS", "前端工程化", "Vite"],
-    work_experience: [
-      { company: "字节跳动", role: "高级前端工程师", years: 3 },
-      { company: "腾讯", role: "前端工程师", years: 2 },
-    ],
-    education_experience: [
-      { school: "北京邮电大学", degree: "本科", major: "软件工程" },
-    ],
-  },
-  data: {
-    name: "张伟",
-    mobile: "+86-137-0000-9012",
-    skill_tags: ["Python", "Spark", "Hadoop", "数据建模", "Airflow", "SQL 优化"],
-    work_experience: [
-      { company: "阿里巴巴", role: "数据科学家", years: 5 },
-      { company: "京东", role: "数据分析师", years: 2 },
-    ],
-    education_experience: [
-      { school: "复旦大学", degree: "硕士", major: "统计学" },
-    ],
-  },
-  ue5: {
-    name: "刘洋",
-    mobile: "+86-136-0000-3456",
-    skill_tags: ["Unreal Engine 5", "C++", "技术美术", "Shader", "Houdini"],
-    work_experience: [
-      { company: "腾讯 IEG", role: "技术美术", years: 4 },
-      { company: "网易游戏", role: "高级技术美术", years: 3 },
-    ],
-    education_experience: [
-      { school: "中国传媒大学", degree: "本科", major: "数字媒体技术" },
-    ],
-  },
-};
-
-const DEFAULT_PROFILE: Profile = {
-  name: "陈思远",
-  mobile: "+86-135-0000-7890",
-  skill_tags: ["TypeScript", "Node.js", "事件驱动架构"],
-  work_experience: [{ company: "示例公司", role: "高级工程师", years: 5 }],
-  education_experience: [{ school: "示例大学", degree: "本科", major: "计算机科学" }],
-};
-
-function pickProfile(slug: string): Profile {
-  for (const key of Object.keys(PROFILES)) {
-    if (slug.includes(key)) return PROFILES[key];
+function resolveSamplePath(p: string): string {
+  // Accepts:
+  //   "wang-feng-java.txt"                                    → data/sample-resumes/wang-feng-java.txt
+  //   "data/sample-resumes/wang-feng-java.txt"                → as-is
+  //   "/storage/resumes/wang-feng_java_2024.pdf" (legacy)    → reroute to known sample
+  if (p.startsWith("/")) {
+    // legacy fixture path — swap to the matching sample
+    const slug = path.basename(p).toLowerCase();
+    if (slug.includes("java") || slug.includes("wang")) return absoluteSample("wang-feng-java.txt");
+    if (slug.includes("frontend") || slug.includes("li-xiaohong")) return absoluteSample("li-xiaohong-frontend.txt");
+    if (slug.includes("data") || slug.includes("zhang-wei")) return absoluteSample("zhang-wei-data.txt");
+    if (slug.includes("ue5") || slug.includes("liu-yang")) return absoluteSample("wang-feng-java.txt"); // no UE5 sample yet
+    return absoluteSample(path.basename(p, path.extname(p)) + ".txt");
   }
-  return DEFAULT_PROFILE;
+  if (p.startsWith("data/")) return path.resolve(p);
+  return absoluteSample(p);
 }
 
-function hashSlug(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h;
+function absoluteSample(name: string): string {
+  return path.resolve("data", "sample-resumes", name);
+}
+
+async function extractTextFromPdf(buf: Buffer): Promise<string> {
+  // pdf-parse expects a Buffer; it's CJS so we dynamic-import to keep ESM happy.
+  const mod = await import("pdf-parse");
+  const pdfParse = (mod as any).default ?? (mod as any);
+  const result = await pdfParse(buf);
+  return result.text ?? "";
+}
+
+function hasStructuredResumePayload(p: ParsedResume): boolean {
+  const nonEmpty = (v: unknown): v is string =>
+    typeof v === "string" && v.trim().length > 0;
+  return Boolean(
+    nonEmpty(p.candidate.name) ||
+      nonEmpty(p.candidate.mobile) ||
+      nonEmpty(p.candidate.email) ||
+      nonEmpty(p.runtime.current_title) ||
+      nonEmpty(p.runtime.current_company) ||
+      (Array.isArray(p.resume.skills_extracted) && p.resume.skills_extracted.length > 0),
+  );
+}
+
+function buildResumeProcessedPayload(
+  source: ResumeDownloadedData,
+  parsed: ParsedResume,
+) {
+  return {
+    // Source passthrough (spec §3.2)
+    bucket: "recruit-resume-raw",
+    objectKey: source.resume_file_paths?.[0] ?? null,
+    filename: source.resume_file_paths?.[0]
+      ? path.basename(source.resume_file_paths[0])
+      : null,
+    hrFolder: null,
+    employeeId: null,
+    etag: null,
+    size: null,
+    sourceEventName: null,
+    receivedAt: new Date().toISOString(),
+    job_requisition_id: source.job_requisition_id,
+
+    // 4-object structured payload
+    candidate: parsed.candidate,
+    candidate_expectation: parsed.candidate_expectation,
+    resume: parsed.resume,
+    runtime: parsed.runtime,
+
+    // Audit
+    parsedAt: new Date().toISOString(),
+    parserVersion: `ao@${MAPPING_VERSION}`,
+  };
 }

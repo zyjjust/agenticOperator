@@ -11,6 +11,7 @@ export default defineConfig({
       '.next',
       'Action_and_Event_Manager',
       'resume-parser-agent',
+      'raas_v4',
     ],
   },
   resolve: {

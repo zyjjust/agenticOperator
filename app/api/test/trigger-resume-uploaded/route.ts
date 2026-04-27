@@ -29,6 +29,7 @@ type ResumeDownloadedInput = Partial<{
   resume_file_paths: string[];
   job_requisition_id: string;
   channel: string;
+  resume_text: string;
 }>;
 
 export async function POST(req: Request): Promise<Response> {
@@ -39,13 +40,12 @@ export async function POST(req: Request): Promise<Response> {
     // Empty body is fine — fall back to a demo payload.
   }
 
-  const payload = {
-    resume_file_paths: body.resume_file_paths ?? [
-      "/storage/resumes/wang-feng_java_2024.pdf",
-    ],
+  const payload: Record<string, unknown> = {
+    resume_file_paths: body.resume_file_paths ?? ["wang-feng-java.txt"],
     job_requisition_id: body.job_requisition_id ?? `JR-ICBC-2024-${pad4(Date.now() % 10000)}`,
     channel: body.channel ?? "BOSS直聘",
   };
+  if (body.resume_text) payload.resume_text = body.resume_text;
 
   try {
     const result = await inngest.send({ name: "RESUME_DOWNLOADED", data: payload });
