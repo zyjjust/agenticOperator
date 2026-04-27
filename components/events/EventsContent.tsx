@@ -980,6 +980,11 @@ function TabFirehose({ event }: { event: EventDef }) {
   const { t } = useApp();
   const [items, setItems] = React.useState<ActivityEvent[]>([]);
   const [paused, setPaused] = React.useState(false);
+  const [autoScroll, setAutoScroll] = React.useState(true);
+  const [dlqCount, setDlqCount] = React.useState<number | null>(null);
+  const [dedupCount, setDedupCount] = React.useState<number | null>(null);
+  const tableRef = React.useRef<HTMLDivElement>(null);
+
   const sseUrl = paused ? "" : `/api/events/${encodeURIComponent(event.name)}/stream`;
   const { state } = useSSE<ActivityEvent>(
     sseUrl,
@@ -989,20 +994,85 @@ function TabFirehose({ event }: { event: EventDef }) {
     },
     { enabled: !paused },
   );
+
+  // Auto-scroll to top on new items (since we prepend, "top" = newest).
+  React.useEffect(() => {
+    if (autoScroll && tableRef.current) {
+      tableRef.current.scrollTop = 0;
+    }
+  }, [items, autoScroll]);
+
+  // 24h DLQ + dedup counts for this event (refresh every 30s).
+  React.useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/alerts?category=dlq&affected=${encodeURIComponent(event.name)}`);
+        const j = await r.json();
+        if (!cancelled) setDlqCount(Array.isArray(j.alerts) ? j.alerts.length : 0);
+      } catch {
+        if (!cancelled) setDlqCount(null);
+      }
+      try {
+        const r = await fetch(`/api/alerts?category=dedup&affected=${encodeURIComponent(event.name)}`);
+        const j = await r.json();
+        if (!cancelled) setDedupCount(Array.isArray(j.alerts) ? j.alerts.length : 0);
+      } catch {
+        if (!cancelled) setDedupCount(null);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [event.name]);
+
   return (
     <div className="flex flex-col min-h-0">
+      {/* KPI bar: 24h DLQ + 24h dedup */}
+      <div className="grid border border-line rounded-md mb-3" style={{ gridTemplateColumns: "1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
+        <div>
+          <div className="hint">24h DLQ</div>
+          <div className="text-[16px] font-semibold tabular-nums" style={{ color: dlqCount && dlqCount > 0 ? "var(--c-err)" : "var(--c-ink-1)" }}>
+            {dlqCount === null ? "—" : dlqCount}
+          </div>
+        </div>
+        <div>
+          <div className="hint">24h dedup hits</div>
+          <div className="text-[16px] font-semibold tabular-nums">
+            {dedupCount === null ? "—" : dedupCount}
+          </div>
+        </div>
+        <div>
+          <div className="hint">stream state</div>
+          <div className="text-[12px]">
+            <Badge variant={state === "open" ? "ok" : state === "reconnecting" ? "warn" : "info"} dot>
+              {state === "open" ? "实时" : state === "reconnecting" ? t("ui_reconnecting") : "就绪"}
+            </Badge>
+          </div>
+        </div>
+      </div>
+
+      {/* Toolbar */}
       <div className="flex items-center gap-2 mb-3">
-        <Badge variant={state === "open" ? "ok" : state === "reconnecting" ? "warn" : "info"} dot>
-          {state === "open" ? "实时" : state === "reconnecting" ? t("ui_reconnecting") : "就绪"}
-        </Badge>
         <Btn size="sm" variant="ghost" onClick={() => setPaused((p) => !p)}>
           {paused ? t("evt_firehose_resume") : t("evt_firehose_pause")}
         </Btn>
+        <label className="flex items-center gap-1.5 text-[11.5px] text-ink-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoScroll}
+            onChange={(e) => setAutoScroll(e.target.checked)}
+          />
+          {t("evt_firehose_autoscroll")}
+        </label>
         <span className="ml-auto text-ink-3 text-[11px]">
           已显示 {items.length} / {FIREHOSE_MAX}
         </span>
       </div>
-      <div className="border border-line rounded-md overflow-auto" style={{ maxHeight: 480 }}>
+      <div ref={tableRef} className="border border-line rounded-md overflow-auto" style={{ maxHeight: 480 }}>
         {items.length === 0 ? (
           <div className="text-ink-3 text-[12px] text-center" style={{ padding: 24 }}>
             等待事件…
