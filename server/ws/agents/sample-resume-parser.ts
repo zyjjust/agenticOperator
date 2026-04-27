@@ -43,21 +43,20 @@ export const sampleResumeParserAgent = inngest.createFunction(
       `Received the resume — resume_id=${resume_id} candidate=${candidate_name ?? "unknown"} file=${file_url}`,
     );
 
-    // Two-sink log: stdout already done; AgentActivity table next so
-    // /live page picks it up and ao.db has the audit trail.
-    await step.run("write-log", async () => {
+    // Phase 1 / 3 — Receipt log. Two sinks: stdout + AgentActivity.
+    await step.run("log-received", async () => {
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
-          type: "agent_complete",
+          type: "event_received",
           narrative: "Received the resume",
-          metadata: JSON.stringify(event.data),
+          metadata: JSON.stringify({ trigger: "resume.uploaded", ...event.data }),
         },
       });
     });
 
-    // ── Parse: deterministic stub. No LLM. 250ms simulated work. ───
+    // Phase 2 / 3 — Parse: deterministic stub. No LLM. 250ms simulated work.
     const startedAt = Date.now();
     const parsed = await step.run("parse-resume", async () => {
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -73,7 +72,23 @@ export const sampleResumeParserAgent = inngest.createFunction(
     });
     const duration_ms = Date.now() - startedAt;
 
-    // ── Publish: per leader's spec ("event type resume.parse") ────
+    await step.run("log-parsed", async () => {
+      await prisma.agentActivity.create({
+        data: {
+          nodeId: AGENT_ID,
+          agentName: AGENT_NAME,
+          type: "agent_complete",
+          narrative: `Parse complete in ${duration_ms}ms · ${parsed.skills.length} skills extracted`,
+          metadata: JSON.stringify({
+            resume_id,
+            duration_ms,
+            parsed_fields: parsed,
+          }),
+        },
+      });
+    });
+
+    // Phase 3 / 3 — Publish: per leader's spec ("event type resume.parse")
     await step.sendEvent("emit-resume-parse", {
       name: "resume.parse",
       data: {
@@ -83,6 +98,22 @@ export const sampleResumeParserAgent = inngest.createFunction(
         duration_ms,
         parsed_at: new Date().toISOString(),
       },
+    });
+
+    await step.run("log-emitted", async () => {
+      await prisma.agentActivity.create({
+        data: {
+          nodeId: AGENT_ID,
+          agentName: AGENT_NAME,
+          type: "event_emitted",
+          narrative: "Published resume.parse",
+          metadata: JSON.stringify({
+            event_name: "resume.parse",
+            resume_id,
+            duration_ms,
+          }),
+        },
+      });
     });
 
     logger.info(

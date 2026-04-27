@@ -253,6 +253,11 @@ function ActivityPane({
   activity: ActivityRow[];
   highlightId: string | null;
 }) {
+  const counts = {
+    received: activity.filter((r) => r.type === "event_received").length,
+    parsed: activity.filter((r) => r.type === "agent_complete").length,
+    emitted: activity.filter((r) => r.type === "event_emitted").length,
+  };
   return (
     <Card>
       <CardHead>
@@ -266,6 +271,11 @@ function ActivityPane({
           ao.db
         </Badge>
       </CardHead>
+      <div className="grid border-b border-line" style={{ gridTemplateColumns: "1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
+        <PhaseCount label="1 · 收到 received" count={counts.received} color="var(--c-info)" />
+        <PhaseCount label="2 · 解析 parsed" count={counts.parsed} color="var(--c-warn)" />
+        <PhaseCount label="3 · 发出 published" count={counts.emitted} color="var(--c-ok)" />
+      </div>
       <div
         className="overflow-auto"
         style={{ padding: 0, maxHeight: "calc(100vh - 200px)" }}
@@ -288,20 +298,33 @@ function ActivityPane({
   );
 }
 
+function PhaseCount({ label, count, color }: { label: string; count: number; color: string }) {
+  return (
+    <div>
+      <div className="hint">{label}</div>
+      <div className="text-[18px] font-semibold tabular-nums" style={{ color }}>
+        {count}
+      </div>
+    </div>
+  );
+}
+
 function ActivityRow({ row, highlight }: { row: ActivityRow; highlight: boolean }) {
   const [expanded, setExpanded] = React.useState(false);
   const meta = row.metadata as Record<string, unknown> | null;
+  const phase = phaseFor(row.type);
   return (
     <div
       className="border-b border-line cursor-pointer transition-colors"
       style={{
         padding: "10px 14px",
         background: highlight ? "var(--c-ok-bg)" : undefined,
+        borderLeft: `3px solid ${phase.color}`,
       }}
       onClick={() => setExpanded((v) => !v)}
     >
       <div className="flex items-center gap-2">
-        <Badge variant="ok">{row.type}</Badge>
+        <Badge variant={phase.badgeVariant}>{phase.label}</Badge>
         <span className="text-[12px] font-medium text-ink-1">{row.narrative}</span>
         <span className="ml-auto mono text-[10.5px] text-ink-3">
           {new Date(row.createdAt).toLocaleTimeString()}
@@ -309,9 +332,7 @@ function ActivityRow({ row, highlight }: { row: ActivityRow; highlight: boolean 
       </div>
       {meta && (
         <div className="mt-1.5 mono text-[10.5px] text-ink-3">
-          resume_id={String(meta.resume_id ?? "—")} · candidate_name=
-          {String(meta.candidate_name ?? "—")} · file_url=
-          {String(meta.file_url ?? "—")}
+          {summaryFor(row.type, meta)}
         </div>
       )}
       {expanded && meta && (
@@ -321,4 +342,50 @@ function ActivityRow({ row, highlight }: { row: ActivityRow; highlight: boolean 
       )}
     </div>
   );
+}
+
+type PhaseInfo = {
+  label: string;
+  color: string;
+  badgeVariant: "ok" | "info" | "warn" | "default";
+};
+
+function phaseFor(type: string): PhaseInfo {
+  if (type === "event_received") {
+    return {
+      label: "1 · subscribe",
+      color: "var(--c-info)",
+      badgeVariant: "info",
+    };
+  }
+  if (type === "agent_complete") {
+    return {
+      label: "2 · parse",
+      color: "var(--c-warn)",
+      badgeVariant: "warn",
+    };
+  }
+  if (type === "event_emitted") {
+    return {
+      label: "3 · publish",
+      color: "var(--c-ok)",
+      badgeVariant: "ok",
+    };
+  }
+  return { label: type, color: "var(--c-line)", badgeVariant: "default" };
+}
+
+function summaryFor(type: string, meta: Record<string, unknown>): string {
+  if (type === "event_received") {
+    return `trigger=${String(meta.trigger ?? "—")} · resume_id=${String(meta.resume_id ?? "—")} · candidate=${String(meta.candidate_name ?? "—")}`;
+  }
+  if (type === "agent_complete") {
+    const pf = (meta.parsed_fields ?? {}) as Record<string, unknown>;
+    const skills = Array.isArray(pf.skills) ? (pf.skills as string[]).join(",") : "—";
+    return `resume_id=${String(meta.resume_id ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")} · skills=${skills}`;
+  }
+  if (type === "event_emitted") {
+    return `event=${String(meta.event_name ?? "—")} · resume_id=${String(meta.resume_id ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")}`;
+  }
+  return JSON.stringify(meta).slice(0, 200);
 }
