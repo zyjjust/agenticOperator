@@ -4,24 +4,52 @@ import { useApp } from "@/lib/i18n";
 import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
 import { EVENT_CATALOG, EventDef, kindDot, STAGE_LABELS } from "@/lib/events-catalog";
+import { fetchJson } from "@/lib/api/client";
+import type { EventsResponse } from "@/lib/api/types";
+
+// Convert API EventContract → legacy EventDef shape.
+function toLegacy(c: EventsResponse["events"][number]): EventDef {
+  return {
+    name: c.name,
+    stage: c.stage,
+    kind: c.kind,
+    rate: c.rateLastHour,
+    err: c.errorRateLastHour,
+    desc: c.desc,
+    publishers: c.publishers,
+    subscribers: c.subscribers,
+    wf: [],
+    emits: c.emits,
+    data: [],
+    mutations: [],
+  };
+}
 
 export function EventsContent() {
   const { t } = useApp();
   const [selectedName, setSelectedName] = React.useState("ANALYSIS_COMPLETED");
   const [tab, setTab] = React.useState("overview");
   const [query, setQuery] = React.useState("");
+  const [apiEvents, setApiEvents] = React.useState<EventDef[] | null>(null);
 
-  const selected = EVENT_CATALOG.find((e) => e.name === selectedName) || EVENT_CATALOG[0];
+  React.useEffect(() => {
+    fetchJson<EventsResponse>("/api/events")
+      .then((res) => setApiEvents(res.events.map(toLegacy)))
+      .catch(() => {/* keep null → fallback */});
+  }, []);
+
+  const events = apiEvents ?? EVENT_CATALOG;
+  const selected = events.find((e) => e.name === selectedName) || events[0];
 
   const grouped = React.useMemo(() => {
     const groups: Record<string, EventDef[]> = {};
     const q = query.trim().toUpperCase();
-    for (const e of EVENT_CATALOG) {
+    for (const e of events) {
       if (q && !e.name.includes(q)) continue;
       (groups[e.stage] ||= []).push(e);
     }
     return groups;
-  }, [query]);
+  }, [query, events]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

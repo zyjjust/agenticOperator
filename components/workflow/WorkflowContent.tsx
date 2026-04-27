@@ -3,6 +3,7 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic, IcName } from "@/components/shared/Ic";
 import { Badge, Btn } from "@/components/shared/atoms";
+import { WORKFLOW_META } from "@/lib/workflow-meta";
 
 type NodeKind = "trigger" | "agent" | "branch" | "hitl" | "guard" | "done";
 
@@ -74,7 +75,7 @@ export function WorkflowContent() {
           <div className="text-ink-3 text-[12px] mt-px">{t("wf_sub")}</div>
         </div>
         <Badge variant="ok" dot>已启用 · Active</Badge>
-        <Badge variant="info">v4.2 · draft</Badge>
+        <Badge variant="info">{WORKFLOW_META.version} · {WORKFLOW_META.status}</Badge>
         <div className="w-px h-5 bg-line" />
         <Btn size="sm"><Ic.clock /> 版本历史</Btn>
         <Btn size="sm"><Ic.play /> 试运行</Btn>

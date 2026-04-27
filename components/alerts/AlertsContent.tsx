@@ -3,6 +3,8 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic, IcName } from "@/components/shared/Ic";
 import { Badge, Btn, Spark } from "@/components/shared/atoms";
+import { fetchJson } from "@/lib/api/client";
+import type { AlertsResponse } from "@/lib/api/types";
 
 type AlertRow = {
   id: string;
@@ -149,6 +151,20 @@ export function AlertsContent() {
   const [channel, setChannel] = React.useState("all");
   const [sevFilter, setSevFilter] = React.useState<string | null>(null);
   const [showResolved, setShowResolved] = React.useState(false);
+  const [apiAlertCount, setApiAlertCount] = React.useState<number | null>(null);
+  const [partial, setPartial] = React.useState(false);
+
+  // P1: fetch live alert count + partial-data state. Detailed rendering
+  // (per-alert rich timeline) deferred to P2 — current AlertRow mock has
+  // shape richer than /api/alerts can deliver.
+  React.useEffect(() => {
+    fetchJson<AlertsResponse>("/api/alerts")
+      .then((res) => {
+        setApiAlertCount(res.alerts.length);
+        if (res.meta.partial?.length) setPartial(true);
+      })
+      .catch(() => setPartial(true));
+  }, []);
 
   const visible = ALERTS.filter((a) => {
     if (!showResolved && a.state === "resolved") return false;
@@ -159,7 +175,7 @@ export function AlertsContent() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <AlertsSubHeader showResolved={showResolved} setShowResolved={setShowResolved} />
+      <AlertsSubHeader showResolved={showResolved} setShowResolved={setShowResolved} apiAlertCount={apiAlertCount} partial={partial} />
       <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "232px 1fr 320px" }}>
         <AlertsLeftRail channel={channel} setChannel={setChannel} sev={sevFilter} setSev={setSevFilter} />
         <AlertsCenter alerts={visible} selectedId={selected.id} onSelect={setSelectedId} alert={selected} />
@@ -169,7 +185,8 @@ export function AlertsContent() {
   );
 }
 
-function AlertsSubHeader({ showResolved, setShowResolved }: { showResolved: boolean; setShowResolved: (b: boolean) => void }) {
+function AlertsSubHeader({ showResolved, setShowResolved, apiAlertCount, partial }: { showResolved: boolean; setShowResolved: (b: boolean) => void; apiAlertCount: number | null; partial: boolean }) {
+  const { t } = useApp();
   const stats = [
     { l: "firing", v: "4", d: "+1 · 10m", tone: "down" },
     { l: "ack 中", v: "2", d: "MTTA 47s", tone: "up" },
@@ -181,7 +198,11 @@ function AlertsSubHeader({ showResolved, setShowResolved }: { showResolved: bool
   return (
     <div className="border-b border-line bg-surface flex items-center" style={{ padding: "14px 22px", gap: 18 }}>
       <div>
-        <div className="text-[15px] font-semibold tracking-tight">异常与告警</div>
+        <div className="text-[15px] font-semibold tracking-tight flex items-center gap-2">
+          异常与告警
+          {apiAlertCount != null && <Badge variant="info">{apiAlertCount}</Badge>}
+          {partial && <Badge variant="warn" dot>{t("ui_partial_data")}</Badge>}
+        </div>
         <div className="text-ink-3 text-[12px] mt-px">规则触发 · 自动通知 · 升级跟踪 · 静默与回放</div>
       </div>
       <div
