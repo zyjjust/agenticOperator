@@ -14,8 +14,8 @@ describe('shortFromWs', () => {
 });
 
 describe('displayKey', () => {
-  it('returns lowercase i18n key', () => {
-    expect(displayKey('Matcher')).toBe('agent_matcher');
-    expect(displayKey('AIInterviewer')).toBe('agent_aiinterviewer');
+  it('returns the display_ namespaced i18n key', () => {
+    expect(displayKey('Matcher')).toBe('display_matcher');
+    expect(displayKey('AIInterviewer')).toBe('display_aiinterviewer');
   });
 });

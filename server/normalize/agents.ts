@@ -14,5 +14,7 @@ export function shortFromWs(wsId: string): string {
 }
 
 export function displayKey(short: string): string {
-  return `agent_${short.toLowerCase()}`;
+  // Returns the i18n key for the agent's canonical display name.
+  // Distinct from existing `agent_<short>` keys (canvas sub-labels) — see lib/i18n.tsx.
+  return `display_${short.toLowerCase()}`;
 }
