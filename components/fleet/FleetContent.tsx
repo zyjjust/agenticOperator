@@ -3,14 +3,64 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, Card, CardHead, Metric, Spark, StatusDot } from "@/components/shared/atoms";
+import { fetchJson } from "@/lib/api/client";
+import type { AgentsResponse } from "@/lib/api/types";
 
 const fakeSpark = (i: number) => {
   const base = [3, 4, 5, 4, 6, 7, 6, 8, 7, 9, 8, 9, 8, 7, 9, 8];
   return base.map((v, j) => Math.max(1, v + ((i * 3 + j * 2) % 4) - 2));
 };
 
+// /fleet legacy row shape (4-status enum). Map RunStatus → legacy.
+type LegacyRow = {
+  id: string;
+  name: string;
+  roleK: string;       // i18n key for sublabel
+  status: "running" | "review" | "degraded" | "paused";
+  owner: string;
+  p50: string;
+  runs: number;
+  success: number | string;
+  cost: string;
+  last: string;
+  ver: string;
+  spark: number[];
+};
+
+function mapStatus(s: AgentsResponse["agents"][number]["status"]): LegacyRow["status"] {
+  if (s === "running") return "running";
+  if (s === "suspended") return "review";
+  if (s === "failed" || s === "timed_out" || s === "interrupted") return "degraded";
+  return "paused"; // null / paused / completed
+}
+
 export function FleetContent() {
   const { t } = useApp();
+  const [apiAgents, setApiAgents] = React.useState<LegacyRow[] | null>(null);
+  const [partial, setPartial] = React.useState(false);
+
+  React.useEffect(() => {
+    fetchJson<AgentsResponse>("/api/agents")
+      .then((res) => {
+        if (res.meta.partial?.includes("ws")) setPartial(true);
+        const rows: LegacyRow[] = res.agents.map((a, i) => ({
+          id: a.short.toUpperCase().slice(0, 3) + "-" + String(i + 1).padStart(2, "0"),
+          name: a.short,
+          roleK: a.displayName, // display_<short_lower>
+          status: mapStatus(a.status),
+          owner: a.ownerTeam,
+          p50: a.p50Ms != null ? `${a.p50Ms}ms` : "—",
+          runs: a.runs24h,
+          success: a.successRate != null ? Number((a.successRate * 100).toFixed(1)) : "—",
+          cost: a.costYuan ? `¥${a.costYuan}` : "¥0",
+          last: a.lastActivityAt ?? "—",
+          ver: a.version,
+          spark: a.spark.length === 16 ? a.spark : fakeSpark(i),
+        }));
+        setApiAgents(rows);
+      })
+      .catch(() => setPartial(true));
+  }, []);
 
   const metrics = [
     { key: "m_active_agents", value: "11 / 12", delta: "+1", kind: "up" as const },
@@ -95,7 +145,8 @@ export function FleetContent() {
           <Card>
             <CardHead>
               <h3 className="m-0 text-[13px] font-semibold tracking-tight">{t("fleet_title")}</h3>
-              <Badge variant="info">{agents.length}</Badge>
+              <Badge variant="info">{(apiAgents ?? agents).length}</Badge>
+              {partial && <Badge variant="warn" dot>{t("ui_partial_data")}</Badge>}
               <div className="flex-1" />
               <Btn size="sm" variant="ghost"><Ic.search /> {t("filter")}</Btn>
               <Btn size="sm" variant="ghost"><Ic.dots /></Btn>
@@ -116,7 +167,7 @@ export function FleetContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {agents.map((a) => (
+                  {(apiAgents ?? agents).map((a) => (
                     <tr key={a.id}>
                       <td>
                         <div className="flex items-center gap-2.5">
@@ -147,7 +198,7 @@ export function FleetContent() {
               </table>
             </div>
             <div className="flex items-center text-[11.5px] text-ink-3 border-t border-line" style={{ padding: "8px 14px" }}>
-              显示 {agents.length} / 14 · <span className="text-ink-3 ml-1.5">已筛选：所有状态</span>
+              显示 {(apiAgents ?? agents).length} / {apiAgents ? 22 : 14} · <span className="text-ink-3 ml-1.5">已筛选：所有状态</span>
               <div className="flex-1" />
               <Btn size="sm" variant="ghost">{t("view_all")} <Ic.chev /></Btn>
             </div>

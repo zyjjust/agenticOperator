@@ -4,24 +4,53 @@ import { useApp } from "@/lib/i18n";
 import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
 import { EVENT_CATALOG, EventDef, kindDot, STAGE_LABELS } from "@/lib/events-catalog";
+import { fetchJson } from "@/lib/api/client";
+import { useSSE } from "@/lib/api/sse";
+import type { EventsResponse, ActivityEvent } from "@/lib/api/types";
+
+// Convert API EventContract → legacy EventDef shape.
+function toLegacy(c: EventsResponse["events"][number]): EventDef {
+  return {
+    name: c.name,
+    stage: c.stage,
+    kind: c.kind,
+    rate: c.rateLastHour,
+    err: c.errorRateLastHour,
+    desc: c.desc,
+    publishers: c.publishers,
+    subscribers: c.subscribers,
+    wf: [],
+    emits: c.emits,
+    data: [],
+    mutations: [],
+  };
+}
 
 export function EventsContent() {
   const { t } = useApp();
   const [selectedName, setSelectedName] = React.useState("ANALYSIS_COMPLETED");
   const [tab, setTab] = React.useState("overview");
   const [query, setQuery] = React.useState("");
+  const [apiEvents, setApiEvents] = React.useState<EventDef[] | null>(null);
 
-  const selected = EVENT_CATALOG.find((e) => e.name === selectedName) || EVENT_CATALOG[0];
+  React.useEffect(() => {
+    fetchJson<EventsResponse>("/api/events")
+      .then((res) => setApiEvents(res.events.map(toLegacy)))
+      .catch(() => {/* keep null → fallback */});
+  }, []);
+
+  const events = apiEvents ?? EVENT_CATALOG;
+  const selected = events.find((e) => e.name === selectedName) || events[0];
 
   const grouped = React.useMemo(() => {
     const groups: Record<string, EventDef[]> = {};
     const q = query.trim().toUpperCase();
-    for (const e of EVENT_CATALOG) {
+    for (const e of events) {
       if (q && !e.name.includes(q)) continue;
       (groups[e.stage] ||= []).push(e);
     }
     return groups;
-  }, [query]);
+  }, [query, events]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -178,6 +207,7 @@ function EventDetail({ event, tab, setTab }: { event: EventDef; tab: string; set
         {tab === "runs" && <TabRuns event={event} />}
         {tab === "history" && <TabHistory event={event} />}
         {tab === "logs" && <TabLogs event={event} />}
+        {tab === "firehose" && <TabFirehose event={event} />}
       </div>
     </div>
   );
@@ -250,6 +280,7 @@ function EventDetailTabs({ tab, setTab }: { tab: string; setTab: (t: string) => 
     { id: "runs", label: t("em_tab_runs") },
     { id: "history", label: t("em_tab_history") },
     { id: "logs", label: t("em_tab_logs") },
+    { id: "firehose", label: t("evt_tab_firehose") },
   ];
   return (
     <div className="border-b border-line bg-surface flex gap-0.5" style={{ padding: "0 14px" }}>
@@ -941,4 +972,70 @@ function randomEvent(dateOverride?: Date): StreamItem {
     tenant: tenants[Math.floor(Math.random() * tenants.length)],
     sub: ev.subscribers[0],
   };
+}
+
+const FIREHOSE_MAX = 200;
+
+function TabFirehose({ event }: { event: EventDef }) {
+  const { t } = useApp();
+  const [items, setItems] = React.useState<ActivityEvent[]>([]);
+  const [paused, setPaused] = React.useState(false);
+  const sseUrl = paused ? "" : `/api/events/${encodeURIComponent(event.name)}/stream`;
+  const { state } = useSSE<ActivityEvent>(
+    sseUrl,
+    (data, name) => {
+      if (name !== "activity") return;
+      setItems((prev) => [data, ...prev].slice(0, FIREHOSE_MAX));
+    },
+    { enabled: !paused },
+  );
+  return (
+    <div className="flex flex-col min-h-0">
+      <div className="flex items-center gap-2 mb-3">
+        <Badge variant={state === "open" ? "ok" : state === "reconnecting" ? "warn" : "info"} dot>
+          {state === "open" ? "实时" : state === "reconnecting" ? t("ui_reconnecting") : "就绪"}
+        </Badge>
+        <Btn size="sm" variant="ghost" onClick={() => setPaused((p) => !p)}>
+          {paused ? t("evt_firehose_resume") : t("evt_firehose_pause")}
+        </Btn>
+        <span className="ml-auto text-ink-3 text-[11px]">
+          已显示 {items.length} / {FIREHOSE_MAX}
+        </span>
+      </div>
+      <div className="border border-line rounded-md overflow-auto" style={{ maxHeight: 480 }}>
+        {items.length === 0 ? (
+          <div className="text-ink-3 text-[12px] text-center" style={{ padding: 24 }}>
+            等待事件…
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>run</th>
+                <th>agent</th>
+                <th>type</th>
+                <th>narrative</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td className="mono">{new Date(it.createdAt).toLocaleTimeString()}</td>
+                  <td className="mono">{it.runId.slice(-8)}</td>
+                  <td className="mono">{it.agentShort}</td>
+                  <td>
+                    <Badge variant={it.type === "agent_error" || it.type === "anomaly" ? "err" : "default"}>
+                      {it.type}
+                    </Badge>
+                  </td>
+                  <td className="text-[11.5px]">{it.narrative}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
 }

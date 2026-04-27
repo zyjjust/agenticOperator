@@ -3,6 +3,8 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic, IcName } from "@/components/shared/Ic";
 import { Badge, Btn, Spark } from "@/components/shared/atoms";
+import { fetchJson } from "@/lib/api/client";
+import type { DataSourcesResponse } from "@/lib/api/types";
 
 type SourceStatus = "healthy" | "degraded" | "failing" | "paused" | "pending";
 
@@ -74,13 +76,27 @@ const SOURCES: Source[] = [
 export function DataSourcesContent() {
   const [cat, setCat] = React.useState("all");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [apiCount, setApiCount] = React.useState<number | null>(null);
+  const [partial, setPartial] = React.useState(false);
+
+  // P1: fetch live count + partial-data state. Detailed per-source rendering
+  // (vendor logos, deep tab content) deferred — current Source mock has
+  // shape richer than /api/datasources delivers.
+  React.useEffect(() => {
+    fetchJson<DataSourcesResponse>("/api/datasources")
+      .then((res) => {
+        setApiCount(res.sources.length);
+        if (res.meta.partial?.length) setPartial(true);
+      })
+      .catch(() => setPartial(true));
+  }, []);
 
   const visible = SOURCES.filter((s) => cat === "all" || s.cat === cat);
   const selected = selectedId ? SOURCES.find((s) => s.id === selectedId) : null;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <DSSubHeader />
+      <DSSubHeader apiCount={apiCount} partial={partial} />
       <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "232px 1fr 320px" }}>
         <DSCatRail cat={cat} setCat={setCat} />
         {selected ? (
@@ -94,7 +110,8 @@ export function DataSourcesContent() {
   );
 }
 
-function DSSubHeader() {
+function DSSubHeader({ apiCount, partial }: { apiCount: number | null; partial: boolean }) {
+  const { t } = useApp();
   const stats = [
     { l: "已连接", v: "21 / 24", d: "1 待授权 · 2 异常", tone: "muted" },
     { l: "事件 · 1d", v: "262.4k", d: "+8.4%", tone: "up" },
@@ -106,7 +123,11 @@ function DSSubHeader() {
   return (
     <div className="border-b border-line bg-surface flex items-center" style={{ padding: "14px 22px", gap: 18 }}>
       <div>
-        <div className="text-[15px] font-semibold tracking-tight">数据源 · 连接器</div>
+        <div className="text-[15px] font-semibold tracking-tight flex items-center gap-2">
+          数据源 · 连接器
+          {apiCount != null && <Badge variant="info">{apiCount}</Badge>}
+          {partial && <Badge variant="warn" dot>{t("ui_partial_data")}</Badge>}
+        </div>
         <div className="text-ink-3 text-[12px] mt-px">客户系统 · 渠道 · 模型 · 消息 · 存储 · 身份</div>
       </div>
       <div

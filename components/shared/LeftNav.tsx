@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { Ic, IcName } from "./Ic";
 import { useApp } from "@/lib/i18n";
+import { fetchJson } from "@/lib/api/client";
+import type { HumanTasksResponse } from "@/lib/api/types";
 
 type NavItem =
   | { type: "group"; title: string }
@@ -13,16 +15,30 @@ type NavItem =
 export function LeftNav() {
   const { t } = useApp();
   const pathname = usePathname();
+  const [inboxCount, setInboxCount] = React.useState<string>("—");
+
+  React.useEffect(() => {
+    const tick = () => {
+      fetchJson<HumanTasksResponse>("/api/human-tasks")
+        .then((r) => setInboxCount(r.total > 0 ? String(r.total) : ""))
+        .catch(() => {/* keep "—" */});
+    };
+    tick();
+    const id = setInterval(tick, 10_000);
+    return () => clearInterval(id);
+  }, []);
 
   const items: NavItem[] = [
     { type: "group", title: t("nav_group_operate") },
     { type: "item", id: "overview",   icon: "grid",     label: t("nav_overview"), href: "/" },
-    { type: "item", id: "fleet",      icon: "cpu",      label: t("nav_fleet"), count: "14", href: "/fleet" },
-    { type: "item", id: "runs",       icon: "play",     label: t("nav_runs"),  count: "312", href: "/live" },
-    { type: "item", id: "alerts",     icon: "alert",    label: t("nav_alerts"),count: "3", href: "/alerts" },
+    { type: "item", id: "fleet",      icon: "cpu",      label: t("nav_fleet"), count: "22", href: "/fleet" },
+    { type: "item", id: "runs",       icon: "play",     label: t("nav_runs"),  count: "—", href: "/live" },
+    { type: "item", id: "inbox",      icon: "user",     label: t("nav_inbox"), count: inboxCount, href: "/inbox" },
+    { type: "item", id: "alerts",     icon: "alert",    label: t("nav_alerts"),count: "—", href: "/alerts" },
     { type: "group", title: t("nav_group_build") },
-    { type: "item", id: "workflows",  icon: "workflow", label: t("nav_workflows"), count: "9", href: "/workflow" },
-    { type: "item", id: "triggers",   icon: "bolt",     label: t("nav_triggers"), href: "/events" },
+    { type: "item", id: "workflows",  icon: "workflow", label: t("nav_workflows"), count: "1", href: "/workflow" },
+    { type: "item", id: "events",     icon: "bolt",     label: t("nav_events"), href: "/events" },
+    { type: "item", id: "triggers",   icon: "clock",    label: t("nav_triggers"), href: "/triggers" },
     { type: "item", id: "integrations", icon: "plug",   label: t("nav_integrations"), href: "/datasources" },
     { type: "group", title: t("nav_group_govern") },
     { type: "item", id: "permissions",icon: "key",      label: t("nav_permissions"), href: "#" },
