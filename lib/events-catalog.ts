@@ -1,3 +1,8 @@
+/**
+ * @deprecated Fallback for app/api/events/route.ts when EM is unreachable.
+ * Will be deleted in P2 once /api/events has been stable for ≥1 week.
+ * No new code should import this directly — go through /api/events.
+ */
 export type EventKind = "trigger" | "domain" | "error" | "gate";
 
 export type EventDef = {
