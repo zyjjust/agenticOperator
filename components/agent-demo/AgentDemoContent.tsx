@@ -24,13 +24,22 @@ type TriggerResponse = {
   inngest_ids: string[];
 };
 
-const AGENT_NAME = "SampleResumeParser";
+const AGENT_NAME = "processResume";
 const POLL_MS = 2000;
 
+const FILE_PRESETS = [
+  { label: "Java 后端 (王峰)",    path: "/storage/resumes/wang-feng_java_2024.pdf" },
+  { label: "前端 (李晓红)",       path: "/storage/resumes/li-xiaohong_frontend_2024.pdf" },
+  { label: "数据科学 (张伟)",     path: "/storage/resumes/zhang-wei_data_2024.pdf" },
+  { label: "UE5 技术美术 (刘洋)", path: "/storage/resumes/liu-yang_ue5_2024.pdf" },
+];
+
+const CHANNEL_PRESETS = ["BOSS直聘", "智联招聘", "前程无忧", "猎聘"];
+
 export function AgentDemoContent() {
-  const [resumeId, setResumeId] = React.useState("R-001");
-  const [candidateName, setCandidateName] = React.useState("Yuhan");
-  const [fileUrl, setFileUrl] = React.useState("https://example.com/yuhan.pdf");
+  const [filePath, setFilePath] = React.useState(FILE_PRESETS[0].path);
+  const [jobReqId, setJobReqId] = React.useState("JR-ICBC-2024-0042");
+  const [channel, setChannel] = React.useState(CHANNEL_PRESETS[0]);
   const [sending, setSending] = React.useState(false);
   const [lastSent, setLastSent] = React.useState<TriggerResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -76,9 +85,9 @@ export function AgentDemoContent() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            resume_id: resumeId,
-            candidate_name: candidateName,
-            file_url: fileUrl,
+            resume_file_paths: [filePath],
+            job_requisition_id: jobReqId,
+            channel,
           }),
         },
       );
@@ -100,12 +109,12 @@ export function AgentDemoContent() {
         style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.2fr)", padding: "18px 22px", gap: 18 }}
       >
         <TriggerPane
-          resumeId={resumeId}
-          setResumeId={setResumeId}
-          candidateName={candidateName}
-          setCandidateName={setCandidateName}
-          fileUrl={fileUrl}
-          setFileUrl={setFileUrl}
+          filePath={filePath}
+          setFilePath={setFilePath}
+          jobReqId={jobReqId}
+          setJobReqId={setJobReqId}
+          channel={channel}
+          setChannel={setChannel}
           sending={sending}
           fire={fire}
           lastSent={lastSent}
@@ -137,23 +146,23 @@ function SubHeader() {
 }
 
 function TriggerPane({
-  resumeId,
-  setResumeId,
-  candidateName,
-  setCandidateName,
-  fileUrl,
-  setFileUrl,
+  filePath,
+  setFilePath,
+  jobReqId,
+  setJobReqId,
+  channel,
+  setChannel,
   sending,
   fire,
   lastSent,
   error,
 }: {
-  resumeId: string;
-  setResumeId: (s: string) => void;
-  candidateName: string;
-  setCandidateName: (s: string) => void;
-  fileUrl: string;
-  setFileUrl: (s: string) => void;
+  filePath: string;
+  setFilePath: (s: string) => void;
+  jobReqId: string;
+  setJobReqId: (s: string) => void;
+  channel: string;
+  setChannel: (s: string) => void;
   sending: boolean;
   fire: () => void;
   lastSent: TriggerResponse | null;
@@ -163,13 +172,24 @@ function TriggerPane({
     <Card>
       <CardHead>
         <div className="text-[13px] font-semibold tracking-tight">
-          1 · 发送事件 / Send <span className="mono">resume.uploaded</span>
+          1 · 发送事件 / Send <span className="mono">RESUME_DOWNLOADED</span>
         </div>
       </CardHead>
       <div className="flex flex-col gap-3" style={{ padding: 16 }}>
-        <Field label="resume_id" value={resumeId} onChange={setResumeId} />
-        <Field label="candidate_name" value={candidateName} onChange={setCandidateName} />
-        <Field label="file_url" value={fileUrl} onChange={setFileUrl} />
+        <SelectField
+          label="resume_file_paths[0]"
+          value={filePath}
+          onChange={setFilePath}
+          options={FILE_PRESETS.map((p) => ({ label: p.label, value: p.path }))}
+        />
+        <Field label="job_requisition_id" value={jobReqId} onChange={setJobReqId} />
+        <SelectField
+          label="channel"
+          value={channel}
+          onChange={setChannel}
+          options={CHANNEL_PRESETS.map((c) => ({ label: c, value: c }))}
+        />
+
         <div className="flex items-center gap-2 mt-2">
           <Btn variant="primary" size="md" onClick={fire} disabled={sending}>
             {sending ? "发送中…" : <><Ic.bolt /> 发送事件</>}
@@ -201,27 +221,58 @@ function TriggerPane({
         )}
 
         <div className="text-[11.5px] text-ink-3 mt-2">
-          点击后会发生 / On click:
+          对应真实工作流节点 <span className="mono">9-1 / processResume</span>
+          （[workflow_20260330.json]）。点击后：
           <ol className="list-decimal pl-5 mt-1 space-y-0.5">
             <li>
-              POST 到 <span className="mono">/api/test/trigger-resume-uploaded</span>
+              POST → <span className="mono">/api/test/trigger-resume-uploaded</span>
             </li>
             <li>
-              该端点 <span className="mono">inngest.send(&quot;resume.uploaded&quot;, …)</span>
+              端点{" "}
+              <span className="mono">inngest.send(&quot;RESUME_DOWNLOADED&quot;, …)</span>
             </li>
             <li>
-              Inngest dev (<span className="mono">:8288</span>) 把事件路由到{" "}
+              Inngest dev (<span className="mono">:8288</span>) 路由到{" "}
               <span className="mono">{AGENT_NAME}</span>
             </li>
             <li>
-              Agent 写一行 <span className="mono">AgentActivity</span> 到 ao.db + emit{" "}
-              <span className="mono">resume.parse</span>
+              Agent: 写 log → parse stub (250ms) → emit{" "}
+              <span className="mono">RESUME_PROCESSED</span>
             </li>
             <li>右侧"日志"面板每 2 秒拉一次，新行会高亮</li>
           </ol>
         </div>
       </div>
     </Card>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (s: string) => void;
+  options: { label: string; value: string }[];
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="hint mono">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-panel border border-line rounded-md mono text-[12px] px-2 py-1.5 text-ink-1 outline-none focus:border-accent-line"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -377,12 +428,13 @@ function phaseFor(type: string): PhaseInfo {
 
 function summaryFor(type: string, meta: Record<string, unknown>): string {
   if (type === "event_received") {
-    return `trigger=${String(meta.trigger ?? "—")} · resume_id=${String(meta.resume_id ?? "—")} · candidate=${String(meta.candidate_name ?? "—")}`;
+    const paths = (meta.resume_file_paths as string[] | undefined) ?? [];
+    return `trigger=${String(meta.trigger ?? "—")} · jd=${String(meta.job_requisition_id ?? "—")} · channel=${String(meta.channel ?? "—")} · file=${paths[0] ?? "—"}`;
   }
   if (type === "agent_complete") {
-    const pf = (meta.parsed_fields ?? {}) as Record<string, unknown>;
-    const skills = Array.isArray(pf.skills) ? (pf.skills as string[]).join(",") : "—";
-    return `resume_id=${String(meta.resume_id ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")} · skills=${skills}`;
+    const parsed = (meta.parsed ?? {}) as Record<string, unknown>;
+    const tags = Array.isArray(parsed.skill_tags) ? (parsed.skill_tags as string[]).join("、") : "—";
+    return `resume_id=${String(meta.resume_id ?? "—")} · candidate=${String(parsed.name ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")} · skill_tags=[${tags}]`;
   }
   if (type === "event_emitted") {
     return `event=${String(meta.event_name ?? "—")} · resume_id=${String(meta.resume_id ?? "—")} · duration_ms=${String(meta.duration_ms ?? "—")}`;

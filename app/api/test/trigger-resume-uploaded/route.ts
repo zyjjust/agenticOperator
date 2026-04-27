@@ -1,55 +1,58 @@
 // Manual trigger endpoint for the leader's design-approval demo.
-// POSTing here publishes a `resume.uploaded` event onto the Inngest
-// bus, which fans out to sampleResumeParserAgent.
+//
+// Publishes RESUME_DOWNLOADED onto the Inngest bus, which fans out to
+// processResume (workflow node 9-1). Aligned with the real recruitment
+// workflow schema in Action_and_Event_Manager/data/events_20260330.json:
+//
+//   {
+//     "name": "RESUME_DOWNLOADED",
+//     "event_data": [
+//       { "name": "resume_file_paths", "type": "List<String>" },
+//       { "name": "job_requisition_id", "type": "String" }
+//     ]
+//   }
 //
 // Curl:
 //   curl -X POST http://localhost:3002/api/test/trigger-resume-uploaded
 //   curl -X POST http://localhost:3002/api/test/trigger-resume-uploaded \
 //        -H 'Content-Type: application/json' \
-//        -d '{"resume_id":"abc-123","candidate_name":"Yuhan","file_url":"https://example.com/yuhan.pdf"}'
+//        -d '{"resume_file_paths":["/storage/wang-feng_2024.pdf"],
+//             "job_requisition_id":"JR-ICBC-2024-0042","channel":"BOSS直聘"}'
 //
-// Then watch:
-//   - http://localhost:8288 (Inngest dev dashboard) — function run + emitted resume.parse
-//   - sqlite3 data/ao.db "SELECT * FROM AgentActivity WHERE agentName='SampleResumeParser' ORDER BY createdAt DESC LIMIT 1"
-//
-// P3 chunk 4+: this endpoint stays useful as a debug trigger; for
-// production the trigger comes from RAAS/EM upstream webhooks.
+// (URL keeps the ".../trigger-resume-uploaded" path for backwards
+// compatibility with the UI; the *event* it sends is RESUME_DOWNLOADED.)
 
 import { NextResponse } from "next/server";
 import { inngest } from "@/server/inngest/client";
 
-type ResumeUploadedInput = Partial<{
-  resume_id: string;
-  candidate_name: string;
-  file_url: string;
-  uploaded_at: string;
+type ResumeDownloadedInput = Partial<{
+  resume_file_paths: string[];
+  job_requisition_id: string;
+  channel: string;
 }>;
 
 export async function POST(req: Request): Promise<Response> {
-  let body: ResumeUploadedInput = {};
+  let body: ResumeDownloadedInput = {};
   try {
     body = await req.json();
   } catch {
-    // Empty body is fine — we'll fall back to a demo payload.
+    // Empty body is fine — fall back to a demo payload.
   }
 
   const payload = {
-    resume_id: body.resume_id ?? `demo-${Date.now()}`,
-    candidate_name: body.candidate_name ?? "Demo Candidate",
-    file_url: body.file_url ?? "https://example.com/demo-resume.pdf",
-    uploaded_at: body.uploaded_at ?? new Date().toISOString(),
+    resume_file_paths: body.resume_file_paths ?? [
+      "/storage/resumes/wang-feng_java_2024.pdf",
+    ],
+    job_requisition_id: body.job_requisition_id ?? `JR-ICBC-2024-${pad4(Date.now() % 10000)}`,
+    channel: body.channel ?? "BOSS直聘",
   };
 
   try {
-    const result = await inngest.send({ name: "resume.uploaded", data: payload });
+    const result = await inngest.send({ name: "RESUME_DOWNLOADED", data: payload });
     return NextResponse.json({
       ok: true,
-      sent: { name: "resume.uploaded", data: payload },
+      sent: { name: "RESUME_DOWNLOADED", data: payload },
       inngest_ids: result.ids,
-      next_steps: [
-        "Open http://localhost:8288 to watch the function run",
-        "sqlite3 data/ao.db \"SELECT * FROM AgentActivity WHERE agentName='SampleResumeParser' ORDER BY createdAt DESC LIMIT 5\"",
-      ],
     });
   } catch (e) {
     return NextResponse.json(
@@ -61,4 +64,8 @@ export async function POST(req: Request): Promise<Response> {
       { status: 500 },
     );
   }
+}
+
+function pad4(n: number): string {
+  return String(n).padStart(4, "0");
 }
