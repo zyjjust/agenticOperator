@@ -3,18 +3,23 @@
 // Outputs the schema in resume-agent-engineering-spec §3.2 (RESUME_PROCESSED):
 //   { candidate, candidate_expectation, resume, runtime }
 //
-// Three modes (auto-chosen by env priority):
-//   1. new-api gateway   — AI_BASE_URL + AI_API_KEY + AI_MODEL set (any
-//                          OpenAI-compatible gateway, e.g. the company
-//                          new-api at 10.100.0.70:3010/v1 with
-//                          google/gemini-3-flash-preview)
-//   2. OpenAI direct     — OPENAI_API_KEY set, model = gpt-4o-mini
-//   3. Deterministic stub — fallback (no LLM, regex over text)
+// Mode selection (priority, env-driven):
+//   - For binary buffers (PDF): extractResumeFromBuffer()
+//     1. RoboHire SaaS — ROBOHIRE_API_KEY set (production resume parser)
+//     2. Text fallback — pdf-parse → extractResume(text)
+//   - For text:           extractResume()
+//     1. new-api gateway — AI_BASE_URL + AI_API_KEY + AI_MODEL
+//     2. OpenAI direct   — OPENAI_API_KEY (gpt-4o-mini)
+//     3. Deterministic stub — regex over text
 //
-// Result carries { mode, modelUsed } so the UI can flag which path
-// produced the data.
+// Result.mode tags which path produced the data so the UI can show it.
 
 import OpenAI from "openai";
+import {
+  isRoboHireConfigured,
+  roboHireParseResume,
+  RoboHireError,
+} from "./robohire";
 
 export type ParsedResume = {
   candidate: {
@@ -64,11 +69,66 @@ export type ParsedResume = {
 
 export type ExtractResult = {
   parsed: ParsedResume;
-  mode: "new-api" | "openai" | "stub";
+  mode: "robohire" | "new-api" | "openai" | "stub";
   modelUsed: string;
   duration_ms: number;
-  fallback_reason?: string; // present only when an LLM was attempted but fell back
+  requestId?: string;       // present for robohire
+  cached?: boolean;          // present for robohire
+  fallback_reason?: string;  // present only when an LLM was attempted but fell back
 };
+
+/**
+ * Binary-input extractor — used by the agent when it has the raw PDF
+ * bytes from MinIO. Tries RoboHire first (production), falls back to
+ * text extraction + LLM/stub if RoboHire isn't configured or fails.
+ */
+export async function extractResumeFromBuffer(
+  buffer: Buffer,
+  filename: string,
+): Promise<ExtractResult> {
+  const startedAt = Date.now();
+  if (isRoboHireConfigured()) {
+    try {
+      const r = await roboHireParseResume(buffer, filename);
+      return {
+        parsed: r.parsed,
+        mode: "robohire",
+        modelUsed: "robohire/parse-resume",
+        duration_ms: r.duration_ms,
+        requestId: r.requestId,
+        cached: r.cached,
+      };
+    } catch (e) {
+      const reason =
+        e instanceof RoboHireError
+          ? `${e.status}: ${e.message}`
+          : (e as Error).message;
+      console.warn(`[resume-extractor] RoboHire failed (${reason}); falling back to text path`);
+      // fall through to text extraction
+      const fb = await extractResume(await bufferToText(buffer, filename));
+      return {
+        ...fb,
+        fallback_reason: `robohire: ${reason}`,
+        duration_ms: Date.now() - startedAt,
+      };
+    }
+  }
+  // No RoboHire configured — text path only
+  const text = await bufferToText(buffer, filename);
+  return await extractResume(text);
+}
+
+async function bufferToText(buffer: Buffer, filename: string): Promise<string> {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".pdf")) {
+    const mod = await import("pdf-parse");
+    const pdfParse = (mod as any).default ?? (mod as any);
+    const result = await pdfParse(buffer);
+    return result.text ?? "";
+  }
+  // .txt / fallback
+  return buffer.toString("utf-8");
+}
 
 const SYSTEM_PROMPT = `You parse Chinese resumes into a strict JSON schema.
 

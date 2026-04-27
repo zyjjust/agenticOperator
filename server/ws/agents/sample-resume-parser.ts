@@ -18,18 +18,43 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
-import { extractResume, type ParsedResume } from "../../llm/resume-extractor";
+import {
+  extractResume,
+  extractResumeFromBuffer,
+  type ParsedResume,
+} from "../../llm/resume-extractor";
+import { getMinIOClient, isMinIOConfigured } from "../../llm/minio-client";
 
 const AGENT_ID = "9-1";
 const AGENT_NAME = "processResume";
-const MAPPING_VERSION = "stub-or-openai-2026-04-27";
+const MAPPING_VERSION = "robohire-or-llm-2026-04-28";
 
-// Inbound (events_20260330 → RESUME_DOWNLOADED.event_data)
+// Inbound — supports BOTH the canonical RAAS schema AND the lighter
+// AO-test variant.
+//
+// Canonical (RAAS handoff §2):
+//   { bucket, objectKey, filename, hrFolder, employeeId, etag, size,
+//     sourceEventName, receivedAt }
+//
+// AO-test variant (used by /api/test/trigger-resume-uploaded):
+//   { resume_file_paths: [], job_requisition_id, channel, resume_text? }
 type ResumeDownloadedData = {
-  resume_file_paths: string[];
-  job_requisition_id: string;
+  // Canonical fields
+  bucket?: string;
+  objectKey?: string;
+  filename?: string;
+  hrFolder?: string | null;
+  employeeId?: string | null;
+  etag?: string | null;
+  size?: number | null;
+  sourceEventName?: string | null;
+  receivedAt?: string;
+
+  // AO-test fields
+  resume_file_paths?: string[];
+  job_requisition_id?: string;
   channel?: string;
-  resume_text?: string; // POC convenience: pass text inline
+  resume_text?: string;
 };
 
 export const sampleResumeParserAgent = inngest.createFunction(
@@ -41,12 +66,16 @@ export const sampleResumeParserAgent = inngest.createFunction(
   },
   async ({ event, step, logger }) => {
     const data = event.data as ResumeDownloadedData;
-    const filePath = data.resume_file_paths?.[0] ?? null;
-    const jdId = data.job_requisition_id;
+    const sourceLabel =
+      data.bucket && data.objectKey
+        ? `${data.bucket}/${data.objectKey}`
+        : data.resume_file_paths?.[0] ??
+          (data.resume_text ? "inline text" : "—");
+    const jdId = data.job_requisition_id ?? null;
 
     // ── Step 0 — Receipt log (leader's required line, verbatim) ──
     logger.info(
-      `Received the resume — files=${data.resume_file_paths?.length ?? 0} jd=${jdId} channel=${data.channel ?? "—"}`,
+      `Received the resume — source=${sourceLabel} jd=${jdId ?? "—"} channel=${data.channel ?? "—"}`,
     );
     await step.run("log-received", async () => {
       await prisma.agentActivity.create({
@@ -60,56 +89,92 @@ export const sampleResumeParserAgent = inngest.createFunction(
       });
     });
 
-    // ── Step 1 — Fetch bytes (or inline text) ──
-    const text = await step.run("fetch-and-extract-text", async () => {
+    // ── Step 1 — Fetch + parse (single fat step) ─────────────────
+    // Combined: Buffer can't cross step.run JSON boundary, so fetch
+    // and structured-extract happen in one step, returning only the
+    // JSON-serializable parsed result.
+    const extracted = await step.run("fetch-and-parse-resume", async () => {
+      // a) Inline text (AO test path)
       if (data.resume_text) {
-        return data.resume_text;
+        const r = await extractResume(data.resume_text);
+        return {
+          ...r,
+          sourceDescription: "inline resume_text",
+          inputBytes: data.resume_text.length,
+        };
       }
+
+      // b) Canonical RAAS path: read from MinIO
+      if (data.bucket && data.objectKey) {
+        if (!isMinIOConfigured()) {
+          throw new Error(
+            `RESUME_DOWNLOADED indicates MinIO source ${data.bucket}/${data.objectKey} but MINIO_* env not configured`,
+          );
+        }
+        const minio = getMinIOClient();
+        const stream = await minio.getObject(data.bucket, data.objectKey);
+        const buf = await streamToBuffer(stream);
+        const filename = data.filename ?? path.basename(data.objectKey);
+        const r = await extractResumeFromBuffer(buf, filename);
+        return {
+          ...r,
+          sourceDescription: `MinIO ${data.bucket}/${data.objectKey} (${buf.length} bytes)`,
+          inputBytes: buf.length,
+        };
+      }
+
+      // c) AO-test path: local sample file
+      const filePath = data.resume_file_paths?.[0];
       if (filePath) {
         const abs = resolveSamplePath(filePath);
         const buf = await fs.readFile(abs);
-        if (filePath.endsWith(".pdf")) {
-          return await extractTextFromPdf(buf);
-        }
-        return buf.toString("utf-8");
+        const filename = path.basename(filePath);
+        const r = filePath.toLowerCase().endsWith(".pdf")
+          ? await extractResumeFromBuffer(buf, filename)
+          : await extractResume(buf.toString("utf-8"));
+        return {
+          ...r,
+          sourceDescription: `local ${filePath} (${buf.length} bytes)`,
+          inputBytes: buf.length,
+        };
       }
+
       throw new Error(
-        "RESUME_DOWNLOADED event must include either resume_text or a readable resume_file_paths[0]",
+        "RESUME_DOWNLOADED must include {bucket,objectKey} OR resume_text OR resume_file_paths[0]",
       );
     });
 
-    await step.run("log-extracted", async () => {
+    await step.run("log-fetched", async () => {
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "tool",
-          narrative: `Extracted ${text.length} chars from ${filePath ?? "inline text"}`,
+          narrative: `Fetched ${extracted.inputBytes} bytes from ${extracted.sourceDescription}`,
           metadata: JSON.stringify({
-            chars: text.length,
-            preview: text.slice(0, 200),
-            source: filePath ?? "inline",
+            chars: extracted.inputBytes,
+            source: extracted.sourceDescription,
           }),
         },
       });
     });
 
-    // ── Step 2 — Structured extraction (LLM or stub) ──
-    const extracted = await step.run("extract-structured", async () => {
-      return await extractResume(text);
-    });
-
     await step.run("log-parsed", async () => {
+      const skillCount = extracted.parsed.candidate.skills.length;
+      const jobCount = extracted.parsed.resume.work_history.length;
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "agent_complete",
-          narrative: `Parse complete in ${extracted.duration_ms}ms · ${extracted.parsed.candidate.skills.length} skills · ${extracted.parsed.resume.work_history.length} jobs · mode=${extracted.mode}`,
+          narrative: `Parse complete in ${extracted.duration_ms}ms · ${skillCount} skills · ${jobCount} jobs · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
           metadata: JSON.stringify({
             mode: extracted.mode,
             modelUsed: extracted.modelUsed,
             duration_ms: extracted.duration_ms,
+            requestId: extracted.requestId,
+            cached: extracted.cached,
+            fallback_reason: extracted.fallback_reason,
             parsed: extracted.parsed,
           }),
         },
@@ -133,7 +198,7 @@ export const sampleResumeParserAgent = inngest.createFunction(
     }
 
     // ── Step 4 — Emit RESUME_PROCESSED with full §3.2 schema ──
-    const payload = buildResumeProcessedPayload(data, extracted.parsed);
+    const payload = buildResumeProcessedPayload(data, extracted);
 
     await step.sendEvent("emit-resume-processed", {
       name: "RESUME_PROCESSED",
@@ -165,6 +230,15 @@ export const sampleResumeParserAgent = inngest.createFunction(
   },
 );
 
+// Stream → Buffer (per resume-agent-engineering-spec §4.2 / §7.1)
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 function resolveSamplePath(p: string): string {
   // Accepts:
   //   "wang-feng-java.txt"                                    → data/sample-resumes/wang-feng-java.txt
@@ -187,14 +261,6 @@ function absoluteSample(name: string): string {
   return path.resolve("data", "sample-resumes", name);
 }
 
-async function extractTextFromPdf(buf: Buffer): Promise<string> {
-  // pdf-parse expects a Buffer; it's CJS so we dynamic-import to keep ESM happy.
-  const mod = await import("pdf-parse");
-  const pdfParse = (mod as any).default ?? (mod as any);
-  const result = await pdfParse(buf);
-  return result.text ?? "";
-}
-
 function hasStructuredResumePayload(p: ParsedResume): boolean {
   const nonEmpty = (v: unknown): v is string =>
     typeof v === "string" && v.trim().length > 0;
@@ -208,33 +274,44 @@ function hasStructuredResumePayload(p: ParsedResume): boolean {
   );
 }
 
+import type { ExtractResult } from "../../llm/resume-extractor";
+
 function buildResumeProcessedPayload(
   source: ResumeDownloadedData,
-  parsed: ParsedResume,
+  extracted: ExtractResult,
 ) {
+  // Prefer canonical fields from RAAS event when present; otherwise
+  // synthesize from the AO-test inputs.
+  const objectKey = source.objectKey ?? source.resume_file_paths?.[0] ?? null;
+  const filename =
+    source.filename ?? (objectKey ? path.basename(objectKey) : null);
+
   return {
     // Source passthrough (spec §3.2)
-    bucket: "recruit-resume-raw",
-    objectKey: source.resume_file_paths?.[0] ?? null,
-    filename: source.resume_file_paths?.[0]
-      ? path.basename(source.resume_file_paths[0])
-      : null,
-    hrFolder: null,
-    employeeId: null,
-    etag: null,
-    size: null,
-    sourceEventName: null,
-    receivedAt: new Date().toISOString(),
-    job_requisition_id: source.job_requisition_id,
+    bucket: source.bucket ?? "recruit-resume-raw",
+    objectKey,
+    filename,
+    hrFolder: source.hrFolder ?? null,
+    employeeId: source.employeeId ?? null,
+    etag: source.etag ?? null,
+    size: source.size ?? null,
+    sourceEventName: source.sourceEventName ?? null,
+    receivedAt: source.receivedAt ?? new Date().toISOString(),
+    job_requisition_id: source.job_requisition_id ?? null,
 
     // 4-object structured payload
-    candidate: parsed.candidate,
-    candidate_expectation: parsed.candidate_expectation,
-    resume: parsed.resume,
-    runtime: parsed.runtime,
+    candidate: extracted.parsed.candidate,
+    candidate_expectation: extracted.parsed.candidate_expectation,
+    resume: extracted.parsed.resume,
+    runtime: extracted.parsed.runtime,
 
     // Audit
     parsedAt: new Date().toISOString(),
-    parserVersion: `ao@${MAPPING_VERSION}`,
+    parserVersion: `ao+${extracted.mode}@${MAPPING_VERSION}`,
+    parserMode: extracted.mode,
+    parserModelUsed: extracted.modelUsed,
+    parserDurationMs: extracted.duration_ms,
+    parserRequestId: extracted.requestId,
+    parserCached: extracted.cached,
   };
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { AGENT_MAP } from '@/lib/agent-mapping';
 import { TRIGGER_CATALOG } from '@/lib/triggers-static';
+import { allFunctions } from '@/server/inngest/functions';
 import type { TriggersResponse, TriggerDef } from '@/lib/api/types';
 
 export async function GET(req: Request): Promise<Response> {
@@ -8,6 +9,44 @@ export async function GET(req: Request): Promise<Response> {
   const kindFilter = url.searchParams.get('kind')?.split(',');
 
   const triggers: TriggerDef[] = [];
+
+  // ── Real Inngest functions (live from server/inngest/functions.ts) ──
+  // These are the agents AO has actually registered with Inngest. Most
+  // important entries — they show what's listening for events RIGHT NOW.
+  for (const fn of allFunctions) {
+    const opts: any = (fn as any)?.opts ?? (fn as any)?.options ?? {};
+    const triggersList: any[] = opts.triggers ?? [];
+    for (let i = 0; i < triggersList.length; i++) {
+      const tg = triggersList[i];
+      if (tg.event) {
+        triggers.push({
+          id: `inngest-${opts.id ?? "fn"}-${i}`,
+          kind: 'upstream',
+          name: tg.event,
+          description: `Inngest function "${opts.name ?? opts.id ?? "?"}" subscribes to event ${tg.event}`,
+          emits: deriveEmitsForFunction(opts.id ?? ""),
+          upstreamEvent: tg.event,
+          lastFiredAt: null,
+          nextFireAt: null,
+          fireCount24h: 0,
+          errorCount24h: 0,
+        });
+      } else if (tg.cron) {
+        triggers.push({
+          id: `inngest-${opts.id ?? "fn"}-cron-${i}`,
+          kind: 'cron',
+          name: `${opts.name ?? opts.id ?? "?"} (cron)`,
+          description: `Inngest cron function ${opts.id ?? "?"}`,
+          emits: deriveEmitsForFunction(opts.id ?? ""),
+          schedule: tg.cron,
+          lastFiredAt: null,
+          nextFireAt: null,
+          fireCount24h: 0,
+          errorCount24h: 0,
+        });
+      }
+    }
+  }
 
   // Cron + webhook from static catalog (P2 fallback; P3 from real config).
   for (const seed of TRIGGER_CATALOG) {
@@ -27,7 +66,6 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   // Upstream emits — events that some agent triggers on but no agent emits.
-  // These are entry points produced by external systems (e.g., REQUIREMENT_LOGGED).
   for (const upstream of deriveUpstreamEvents()) {
     triggers.push({
       id: `upstream-${upstream}`,
@@ -59,12 +97,15 @@ function deriveUpstreamEvents(): string[] {
     for (const e of a.triggersEvents) triggered.add(e);
     for (const e of a.emitsEvents) emitted.add(e);
   }
-  // Triggered but never emitted by any agent → must come from outside.
   return [...triggered].filter((e) => !emitted.has(e));
 }
 
-// Minimal cron next-fire estimator: just adds 5 min for "*/5 * * * *" patterns.
-// Real scheduling lives in WS run-sweeper; this is just for UI display.
+// For each Inngest function id like "9-1" or "10", look up emits in AGENT_MAP.
+function deriveEmitsForFunction(fnId: string): string[] {
+  const m = AGENT_MAP.find((a) => a.wsId === fnId);
+  return m ? m.emitsEvents : [];
+}
+
 function estimateNext(_schedule: string | undefined): string {
   return new Date(Date.now() + 60_000).toISOString();
 }

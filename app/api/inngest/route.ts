@@ -11,6 +11,10 @@
 import { serve } from "inngest/next";
 import { inngest } from "@/server/inngest/client";
 import { allFunctions } from "@/server/inngest/functions";
+import { bootOnce } from "@/server/init";
+
+// Boot side-effects (RAAS bridge poller etc.) on first import.
+bootOnce();
 
 export const { GET, POST, PUT } = serve({
   client: inngest,

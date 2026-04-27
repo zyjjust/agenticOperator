@@ -16,12 +16,14 @@
     "db:push": "prisma db push",
     "db:reset": "rm -f data/ao.db data/ao.db-journal data/ao.db-wal data/ao.db-shm && prisma db push",
     "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed-from-sidecars.ts"
+    "db:seed": "tsx prisma/seed-from-sidecars.ts",
+    "register": "npx tsx scripts/register-with-inngest.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
     "eventsource-parser": "^3.0.8",
     "inngest": "^4.2.4",
+    "minio": "^8.0.7",
     "next": "16.2.4",
     "openai": "^6.34.0",
     "pdf-parse": "^2.4.5",

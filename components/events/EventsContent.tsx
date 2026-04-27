@@ -976,84 +976,105 @@ function randomEvent(dateOverride?: Date): StreamItem {
 
 const FIREHOSE_MAX = 200;
 
+type InngestEventRow = {
+  id: string;
+  name: string;
+  data: unknown;
+  ts?: number;
+  received_at?: string;
+  _source?: string;
+};
+
 function TabFirehose({ event }: { event: EventDef }) {
   const { t } = useApp();
-  const [items, setItems] = React.useState<ActivityEvent[]>([]);
+  const [items, setItems] = React.useState<InngestEventRow[]>([]);
   const [paused, setPaused] = React.useState(false);
   const [autoScroll, setAutoScroll] = React.useState(true);
-  const [dlqCount, setDlqCount] = React.useState<number | null>(null);
-  const [dedupCount, setDedupCount] = React.useState<number | null>(null);
+  const [includeShared, setIncludeShared] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [pollMs, setPollMs] = React.useState(2500);
   const tableRef = React.useRef<HTMLDivElement>(null);
 
-  const sseUrl = paused ? "" : `/api/events/${encodeURIComponent(event.name)}/stream`;
-  const { state } = useSSE<ActivityEvent>(
-    sseUrl,
-    (data, name) => {
-      if (name !== "activity") return;
-      setItems((prev) => [data, ...prev].slice(0, FIREHOSE_MAX));
-    },
-    { enabled: !paused },
-  );
-
-  // Auto-scroll to top on new items (since we prepend, "top" = newest).
+  // Poll local Inngest /v1/events via /api/inngest-events for this event name.
   React.useEffect(() => {
-    if (autoScroll && tableRef.current) {
-      tableRef.current.scrollTop = 0;
-    }
-  }, [items, autoScroll]);
-
-  // 24h DLQ + dedup counts for this event (refresh every 30s).
-  React.useEffect(() => {
+    if (paused) return;
     let cancelled = false;
     const tick = async () => {
       try {
-        const r = await fetch(`/api/alerts?category=dlq&affected=${encodeURIComponent(event.name)}`);
-        const j = await r.json();
-        if (!cancelled) setDlqCount(Array.isArray(j.alerts) ? j.alerts.length : 0);
-      } catch {
-        if (!cancelled) setDlqCount(null);
-      }
-      try {
-        const r = await fetch(`/api/alerts?category=dedup&affected=${encodeURIComponent(event.name)}`);
-        const j = await r.json();
-        if (!cancelled) setDedupCount(Array.isArray(j.alerts) ? j.alerts.length : 0);
-      } catch {
-        if (!cancelled) setDedupCount(null);
+        const url = `/api/inngest-events?name=${encodeURIComponent(event.name)}&limit=100${includeShared ? "&includeShared=1" : ""}`;
+        const r = await fetch(url);
+        if (!cancelled) {
+          if (!r.ok) {
+            setError(`${r.status} ${r.statusText}`);
+            return;
+          }
+          const j = (await r.json()) as { events: InngestEventRow[]; errors?: Array<{ source: string; message: string }> };
+          setError(j.errors?.length ? j.errors.map((e) => `${e.source}: ${e.message}`).join("; ") : null);
+          setItems(j.events.slice(0, FIREHOSE_MAX));
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
       }
     };
     tick();
-    const id = setInterval(tick, 30_000);
+    const id = setInterval(tick, pollMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [event.name]);
+  }, [event.name, paused, includeShared, pollMs]);
+
+  React.useEffect(() => {
+    if (autoScroll && tableRef.current) tableRef.current.scrollTop = 0;
+  }, [items, autoScroll]);
 
   return (
     <div className="flex flex-col min-h-0">
-      {/* KPI bar: 24h DLQ + 24h dedup */}
-      <div className="grid border border-line rounded-md mb-3" style={{ gridTemplateColumns: "1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
+      {/* KPI bar */}
+      <div className="grid border border-line rounded-md mb-3" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
         <div>
-          <div className="hint">24h DLQ</div>
-          <div className="text-[16px] font-semibold tabular-nums" style={{ color: dlqCount && dlqCount > 0 ? "var(--c-err)" : "var(--c-ink-1)" }}>
-            {dlqCount === null ? "—" : dlqCount}
-          </div>
+          <div className="hint">events shown</div>
+          <div className="text-[16px] font-semibold tabular-nums">{items.length}</div>
         </div>
         <div>
-          <div className="hint">24h dedup hits</div>
-          <div className="text-[16px] font-semibold tabular-nums">
-            {dedupCount === null ? "—" : dedupCount}
-          </div>
-        </div>
-        <div>
-          <div className="hint">stream state</div>
+          <div className="hint">poll interval</div>
           <div className="text-[12px]">
-            <Badge variant={state === "open" ? "ok" : state === "reconnecting" ? "warn" : "info"} dot>
-              {state === "open" ? "实时" : state === "reconnecting" ? t("ui_reconnecting") : "就绪"}
+            <select
+              value={pollMs}
+              onChange={(e) => setPollMs(Number(e.target.value))}
+              className="bg-panel border border-line rounded-md mono text-[11.5px] px-2 py-1 text-ink-1 outline-none"
+            >
+              <option value={1000}>1s</option>
+              <option value={2500}>2.5s</option>
+              <option value={5000}>5s</option>
+              <option value={10000}>10s</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <div className="hint">include shared bus</div>
+          <div className="text-[12px]">
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input type="checkbox" checked={includeShared} onChange={(e) => setIncludeShared(e.target.checked)} />
+              <span className="mono text-[11.5px]">RAAS 10.100.0.70</span>
+            </label>
+          </div>
+        </div>
+        <div>
+          <div className="hint">state</div>
+          <div className="text-[12px]">
+            <Badge variant={paused ? "info" : error ? "warn" : "ok"} dot>
+              {paused ? "已暂停" : error ? "错误" : "polling"}
             </Badge>
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="mb-2 text-[11.5px] mono p-2 rounded-md" style={{ background: "var(--c-warn-bg)", color: "var(--c-warn)" }}>
+          ⚠ {error}
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex items-center gap-2 mb-3">
@@ -1061,51 +1082,72 @@ function TabFirehose({ event }: { event: EventDef }) {
           {paused ? t("evt_firehose_resume") : t("evt_firehose_pause")}
         </Btn>
         <label className="flex items-center gap-1.5 text-[11.5px] text-ink-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={autoScroll}
-            onChange={(e) => setAutoScroll(e.target.checked)}
-          />
+          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
           {t("evt_firehose_autoscroll")}
         </label>
         <span className="ml-auto text-ink-3 text-[11px]">
-          已显示 {items.length} / {FIREHOSE_MAX}
+          source: <span className="mono">/api/inngest-events?name={event.name}</span>
         </span>
       </div>
+
       <div ref={tableRef} className="border border-line rounded-md overflow-auto" style={{ maxHeight: 480 }}>
         {items.length === 0 ? (
           <div className="text-ink-3 text-[12px] text-center" style={{ padding: 24 }}>
-            等待事件…
+            没有 <span className="mono">{event.name}</span> 事件。
+            <br />
+            通过 <span className="mono">/agent-demo</span> 发一个看看；或等 RAAS 通过 bridge 推过来。
           </div>
         ) : (
           <table className="tbl">
             <thead>
               <tr>
-                <th>时间</th>
-                <th>run</th>
-                <th>agent</th>
-                <th>type</th>
-                <th>narrative</th>
+                <th>received_at</th>
+                <th>id</th>
+                <th>source</th>
+                <th>data preview</th>
               </tr>
             </thead>
             <tbody>
               {items.map((it) => (
-                <tr key={it.id}>
-                  <td className="mono">{new Date(it.createdAt).toLocaleTimeString()}</td>
-                  <td className="mono">{it.runId.slice(-8)}</td>
-                  <td className="mono">{it.agentShort}</td>
-                  <td>
-                    <Badge variant={it.type === "agent_error" || it.type === "anomaly" ? "err" : "default"}>
-                      {it.type}
-                    </Badge>
-                  </td>
-                  <td className="text-[11.5px]">{it.narrative}</td>
-                </tr>
+                <FirehoseRow key={it.id} it={it} />
               ))}
             </tbody>
           </table>
         )}
       </div>
     </div>
+  );
+}
+
+function FirehoseRow({ it }: { it: InngestEventRow }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const ts = it.received_at ?? (it.ts ? new Date(it.ts).toISOString() : "");
+  const time = ts ? new Date(ts).toLocaleTimeString() : "—";
+  const dataPreview = JSON.stringify(it.data).slice(0, 120);
+  return (
+    <>
+      <tr onClick={() => setExpanded((v) => !v)} style={{ cursor: "pointer" }}>
+        <td className="mono">{time}</td>
+        <td className="mono text-[11px]">{it.id.slice(-12)}</td>
+        <td>
+          <Badge variant={it._source === "shared" ? "warn" : "info"}>
+            {it._source ?? "local"}
+          </Badge>
+        </td>
+        <td className="text-[11.5px] mono">{dataPreview}</td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={4}>
+            <pre
+              className="mono text-[10.5px] text-ink-2 bg-panel border border-line rounded-md overflow-auto"
+              style={{ padding: 8, margin: 4 }}
+            >
+              {JSON.stringify(it, null, 2)}
+            </pre>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

@@ -8,7 +8,8 @@
 // imports — agents import the client, this file imports both.
 
 import { sampleResumeParserAgent } from "../ws/agents/sample-resume-parser";
+import { matchResumeAgent } from "../ws/agents/match-resume";
 
-// P3 chunk 2 will append the 22 ported WS agents here as they land.
+// P3 chunk 2 will append the remaining ported WS agents here as they land.
 
-export const allFunctions = [sampleResumeParserAgent];
+export const allFunctions = [sampleResumeParserAgent, matchResumeAgent];

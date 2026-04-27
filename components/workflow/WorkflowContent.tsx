@@ -4,6 +4,15 @@ import { useApp } from "@/lib/i18n";
 import { Ic, IcName } from "@/components/shared/Ic";
 import { Badge, Btn } from "@/components/shared/atoms";
 import { WORKFLOW_META } from "@/lib/workflow-meta";
+import { fetchJson } from "@/lib/api/client";
+
+type ActiveAgentRow = {
+  agentName: string;
+  type: string;
+  narrative: string;
+  createdAt: string;
+};
+type ActiveAgentsResponse = { rows: ActiveAgentRow[] };
 
 type NodeKind = "trigger" | "agent" | "branch" | "hitl" | "guard" | "done";
 
@@ -66,6 +75,23 @@ export function WorkflowContent() {
 
   const sel = nodes.find((n) => n.id === selectedId) || nodes[0];
 
+  // Live agent activity (last 5 min)
+  const [recentActivity, setRecentActivity] = React.useState<ActiveAgentRow[]>([]);
+  React.useEffect(() => {
+    const tick = async () => {
+      try {
+        const r = await fetchJson<ActiveAgentsResponse>("/api/workflow/active");
+        setRecentActivity(r.rows);
+      } catch {
+        /* keep last */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+  }, []);
+  const activeAgents = new Set(recentActivity.map((r) => r.agentName));
+
   return (
     <div className="flex-1 flex flex-col min-w-0">
       {/* sub-header */}
@@ -74,7 +100,9 @@ export function WorkflowContent() {
           <div className="text-[15px] font-semibold tracking-tight">{t("wf_title")}</div>
           <div className="text-ink-3 text-[12px] mt-px">{t("wf_sub")}</div>
         </div>
-        <Badge variant="ok" dot>已启用 · Active</Badge>
+        <Badge variant={activeAgents.size > 0 ? "ok" : "info"} dot pulse={activeAgents.size > 0}>
+          {activeAgents.size > 0 ? `${activeAgents.size} 个 agent 活跃中` : "空闲"}
+        </Badge>
         <Badge variant="info">{WORKFLOW_META.version} · {WORKFLOW_META.status}</Badge>
         <div className="w-px h-5 bg-line" />
         <Btn size="sm"><Ic.clock /> 版本历史</Btn>
