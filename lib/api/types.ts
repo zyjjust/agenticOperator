@@ -147,6 +147,54 @@ export type HumanTasksResponse = {
   meta: ApiMeta;
 };
 
+export type HumanTaskDetail = HumanTaskCard & {
+  status: 'pending' | 'approved' | 'rejected';
+  payload: unknown;
+  aiOpinion: unknown | null;
+  hasChatbotSession: boolean;
+  chatbotSessionId: string | null;
+};
+
+export type HumanTaskAction =
+  | { action: 'approve'; comment?: string }
+  | { action: 'reject'; reason: string }
+  | { action: 'escalate'; targetClient: string };
+
+export type HumanTaskActionResult = {
+  task: HumanTaskDetail;
+  emittedEvents: string[];
+  newChildSession?: string;
+  meta: ApiMeta;
+};
+
+export type Message = {
+  role: 'user' | 'assistant' | 'system' | 'client';
+  content: string;
+  timestamp: string;
+};
+export type MessagesResponse = {
+  sessionId: string | null;
+  messages: Message[];
+  meta: ApiMeta;
+};
+
+export type TriggerKind = 'cron' | 'webhook' | 'upstream';
+export type TriggerDef = {
+  id: string;
+  kind: TriggerKind;
+  name: string;
+  description: string;
+  emits: string[];
+  schedule?: string;
+  endpoint?: string;
+  upstreamEvent?: string;
+  lastFiredAt: string | null;
+  nextFireAt: string | null;
+  fireCount24h: number;
+  errorCount24h: number;
+};
+export type TriggersResponse = { triggers: TriggerDef[]; meta: ApiMeta };
+
 export type Alert = {
   id: string;
   category: AlertCategory;

@@ -68,6 +68,55 @@ export const wsClient = {
     return get<{ items: any[]; total: number }>('/api/human-task', q as Query);
   },
 
+  fetchHumanTask(id: string) {
+    return get<any>(`/api/human-task/${encodeURIComponent(id)}`);
+  },
+
+  async resolveHumanTask(
+    id: string,
+    body: { action: 'approve' | 'reject' | 'escalate'; comment?: string; reason?: string; targetClient?: string },
+  ): Promise<any> {
+    const url = `${BASE}/api/human-task/${encodeURIComponent(id)}/resolve`;
+    const sig = AbortSignal.timeout(TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: sig,
+      });
+    } catch (e) {
+      throw new WsClientError(0, (e as Error).message, e as Error);
+    }
+    if (!res.ok) {
+      throw new WsClientError(res.status, res.statusText);
+    }
+    return res.json();
+  },
+
+  fetchMessages(taskId: string) {
+    return get<any>(`/api/human-task/${encodeURIComponent(taskId)}/messages`);
+  },
+
+  async postMessage(taskId: string, content: string): Promise<any> {
+    const url = `${BASE}/api/human-task/${encodeURIComponent(taskId)}/messages`;
+    const sig = AbortSignal.timeout(TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+        signal: sig,
+      });
+    } catch (e) {
+      throw new WsClientError(0, (e as Error).message, e as Error);
+    }
+    if (!res.ok) throw new WsClientError(res.status, res.statusText);
+    return res.json();
+  },
+
   fetchHealth() {
     return get<{ status: string; uptime: number }>('/api/health');
   },
