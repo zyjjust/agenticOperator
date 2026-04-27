@@ -7,7 +7,7 @@ import { useApp } from "@/lib/i18n";
 export default function TriggersPage() {
   const { t } = useApp();
   return (
-    <Shell crumbs={[t("nav_group_build"), t("nav_triggers_p2")]} directionTag={t("triggers_title")}>
+    <Shell crumbs={[t("nav_group_build"), t("nav_triggers")]} directionTag={t("triggers_title")}>
       <TriggersContent />
     </Shell>
   );

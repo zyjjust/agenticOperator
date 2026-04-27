@@ -243,7 +243,7 @@ export const I18N: Record<Lang, Record<string, string>> = {
 
     // P2: inbox + triggers
     nav_inbox: "待办",
-    nav_triggers_p2: "触发器",
+    nav_events: "事件",
     inbox_title: "HITL 待办",
     inbox_facet_all: "全部",
     inbox_facet_mine: "我负责",
@@ -513,7 +513,7 @@ export const I18N: Record<Lang, Record<string, string>> = {
 
     // P2: inbox + triggers
     nav_inbox: "Inbox",
-    nav_triggers_p2: "Triggers",
+    nav_events: "Events",
     inbox_title: "HITL Inbox",
     inbox_facet_all: "All",
     inbox_facet_mine: "Mine",
