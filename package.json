@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "db:push": "prisma db push",
     "db:reset": "rm -f data/ao.db data/ao.db-journal data/ao.db-wal data/ao.db-shm && prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed-from-sidecars.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
