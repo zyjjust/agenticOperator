@@ -6,14 +6,15 @@ describe('wsClient', () => {
     vi.stubGlobal('fetch', vi.fn());
   });
 
-  it('GET /api/runs forwards query params', async () => {
+  it('GET /api/runs forwards query params and reshapes {count,items}→{runs,total}', async () => {
     (fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: async () => ({ runs: [{ id: 'r1', status: 'running' }], total: 1 }),
+      json: async () => ({ count: 1, items: [{ id: 'r1', status: 'running', trigger_event: 'X', started_at: 't' }] }),
     });
     const out = await wsClient.fetchRuns({ status: ['running'], limit: 5 });
     expect(out.total).toBe(1);
+    expect(out.runs[0]).toMatchObject({ id: 'r1', triggerEvent: 'X', startedAt: 't' });
     const calledUrl = (fetch as any).mock.calls[0][0];
     expect(calledUrl).toContain('status=running');
     expect(calledUrl).toContain('limit=5');

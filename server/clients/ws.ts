@@ -43,40 +43,89 @@ async function get<T>(path: string, query?: Query): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// snake_case → camelCase normalizer for WS responses.
+function camelize<T = any>(obj: any): T {
+  if (Array.isArray(obj)) return obj.map((x) => camelize(x)) as any;
+  if (obj && typeof obj === 'object') {
+    const out: any = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const ck = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      out[ck] = camelize(v);
+    }
+    return out;
+  }
+  return obj;
+}
+
 export const wsClient = {
   base: BASE,
 
-  fetchRuns(q: { status?: string[]; limit?: number; since?: string }) {
-    return get<{ runs: any[]; total: number }>('/api/runs', q as Query);
+  // WS responds with {count, items} where items have snake_case fields.
+  // Translate to AO contract {runs, total} with camelCase fields.
+  async fetchRuns(q: { status?: string[]; limit?: number; since?: string }) {
+    const r = await get<{ count: number; items: any[] }>('/api/runs', q as Query);
+    return { runs: camelize(r.items ?? []), total: r.count ?? (r.items?.length ?? 0) };
   },
 
-  fetchRun(id: string) {
-    return get<any>(`/api/runs/${encodeURIComponent(id)}`);
+  async fetchRun(id: string) {
+    const r = await get<any>(`/api/runs/${encodeURIComponent(id)}`);
+    return camelize(r);
   },
 
-  fetchSteps(runId: string) {
-    return get<{ steps: any[] }>(
-      `/api/runs/${encodeURIComponent(runId)}/steps`,
-    );
+  // WS does NOT expose /api/runs/[id]/steps. Approximate with activity feed
+  // filtered by runId and reshape entries that look like step lifecycle events.
+  // P3 will replace with direct Prisma query.
+  async fetchSteps(runId: string) {
+    try {
+      const r = await get<{ items: any[]; total: number }>('/api/activity/feed', {
+        runId,
+        limit: 200,
+      } as Query);
+      const stepLike = (r.items ?? [])
+        .filter((a) => a.type === 'agent_start' || a.type === 'agent_complete' || a.type === 'agent_error')
+        .map((a) => ({
+          id: a.id,
+          nodeId: a.nodeId,
+          status:
+            a.type === 'agent_start'
+              ? 'running'
+              : a.type === 'agent_complete'
+                ? 'completed'
+                : 'failed',
+          startedAt: a.createdAt,
+          completedAt: a.type !== 'agent_start' ? a.createdAt : null,
+          durationMs: null,
+          input: null,
+          output: null,
+          error: a.type === 'agent_error' ? a.narrative : null,
+        }));
+      return { steps: stepLike };
+    } catch {
+      return { steps: [] };
+    }
   },
 
   fetchActivityFeed(q: { limit?: number; nodeId?: string; runId?: string }) {
     return get<{ items: any[]; total: number }>('/api/activity/feed', q as Query);
   },
 
-  fetchHumanTasks(q: { status?: string }) {
-    return get<{ items: any[]; total: number }>('/api/human-task', q as Query);
+  // WS responds with bare array (no envelope). Wrap to AO contract.
+  async fetchHumanTasks(q: { status?: string }) {
+    const r = await get<any[]>('/api/human-tasks', q as Query);
+    const items = camelize<any[]>(Array.isArray(r) ? r : []);
+    return { items, total: items.length };
   },
 
-  fetchHumanTask(id: string) {
-    return get<any>(`/api/human-task/${encodeURIComponent(id)}`);
+  async fetchHumanTask(id: string) {
+    const r = await get<any>(`/api/human-tasks/${encodeURIComponent(id)}`);
+    return camelize(r);
   },
 
   async resolveHumanTask(
     id: string,
     body: { action: 'approve' | 'reject' | 'escalate'; comment?: string; reason?: string; targetClient?: string },
   ): Promise<any> {
-    const url = `${BASE}/api/human-task/${encodeURIComponent(id)}/resolve`;
+    const url = `${BASE}/api/human-tasks/${encodeURIComponent(id)}/resolve`;
     const sig = AbortSignal.timeout(TIMEOUT_MS);
     let res: Response;
     try {
@@ -95,12 +144,15 @@ export const wsClient = {
     return res.json();
   },
 
-  fetchMessages(taskId: string) {
-    return get<any>(`/api/human-task/${encodeURIComponent(taskId)}/messages`);
+  async fetchMessages(taskId: string) {
+    const r = await get<any>(
+      `/api/human-tasks/${encodeURIComponent(taskId)}/messages`,
+    );
+    return camelize(r);
   },
 
   async postMessage(taskId: string, content: string): Promise<any> {
-    const url = `${BASE}/api/human-task/${encodeURIComponent(taskId)}/messages`;
+    const url = `${BASE}/api/human-tasks/${encodeURIComponent(taskId)}/messages`;
     const sig = AbortSignal.timeout(TIMEOUT_MS);
     let res: Response;
     try {
