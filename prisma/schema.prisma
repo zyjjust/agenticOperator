@@ -200,15 +200,205 @@ model DedupCache {
 }
 
 // =====================================================================
-// REMAINING TABLES (P3 todo, see spec §4.2):
+// WS — Living KB Layer 4 (Episodes) + AgentConfig
 // =====================================================================
-// From WS:        AgentEpisode, AgentEpisodeStats, AgentPattern, AgentSpan,
-//                 AgentBlackboardEntry, AgentConfig, AgentConfigHistory
-// From EM:        EventDefinition (ACTIVE only, read-only cache),
-//                 GatewayFilterRule, OutboundEvent, RaasMessage,
-//                 RejectedMessage, IngestionConfig, HealthIncident,
-//                 ExecutionTrace
+
+// One row per agent execution. Powers /api/trace LLM-trace tab and the
+// agent-tuning loop (judgeScore + reviewerFeedback).
+model AgentEpisode {
+  id               String   @id @default(cuid())
+  agentName        String
+  runId            String?
+  workflowId       String?
+  clientId         String?
+  input            String   // JSON
+  output           String   // JSON
+  toolTrace        String?  // JSON
+  ruleEvaluations  String?  // JSON
+  durationMs       Int
+  modelUsed        String?
+  tokenUsage       String?  // JSON: {prompt, completion, total}
+  judgeScore       Float?
+  judgeRationale   String?
+  judgedAt         DateTime?
+  reviewerFeedback String?
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  isFewShot        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([agentName])
+  @@index([runId])
+  @@index([clientId, agentName])
+  @@index([judgeScore])
+  @@index([isFewShot])
+  @@index([createdAt])
+}
+
+// Per-agent runtime overrides (temperature, prompt append, tier, retries).
+// Edited via /api/agent-config (P3 chunk 4) and ConfigAdvisor agent.
+model AgentConfig {
+  id               String  @id  // matches WorkflowAgentDef.id
+  enabled          Boolean @default(true)
+  description      String?
+  temperature      Float?
+  maxRetries       Int?
+  tier             String?  // "lite" | "standard" | "pro"
+  maxOutputTokens  Int?
+  promptAppend     String?
+  skillOverrides   String?  // JSON: Record<string, Partial<AIConfig>>
+  tuningNotes      String?
+  lastAdvisedAt    DateTime?
+  adviceAccepted   Boolean  @default(false)
+  updatedAt        DateTime @updatedAt
+  history          AgentConfigHistory[]
+}
+
+model AgentConfigHistory {
+  id        String   @id @default(cuid())
+  agentId   String
+  config    AgentConfig @relation(fields: [agentId], references: [id])
+  changedBy String   @default("user")
+  before    String   // JSON
+  after     String   // JSON
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([agentId])
+  @@index([createdAt])
+}
+
+// =====================================================================
+// EM — Runtime / Gateway / Outbound (Q1: no Editor)
+// =====================================================================
+
+// EM event-definition table; AO reads ACTIVE rows only as event-contract
+// cache. No edit operations exposed by AO.
+model EventDefinition {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  description String
+  payload     String  // JSON
+  extraJson   String  @default("{}") @map("extra_json")
+  status      String  @default("DRAFT")
+  version     String  @default("1.0")
+  sortOrder   Int     @default(0) @map("sort_order")
+  batchId     String? @map("batch_id")
+  createdAt   String  @map("created_at")
+  updatedAt   String  @map("updated_at")
+
+  @@map("events")
+}
+
+model GatewayFilterRule {
+  id               String  @id @default(uuid())
+  ruleType         String  @map("rule_type") // whitelist | blacklist | auto_map
+  eventNamePattern String  @map("event_name_pattern")
+  targetEventId    String? @map("target_event_id")
+  enabled          Int     @default(1)
+  description      String?
+  createdAt        String  @map("created_at")
+
+  @@map("gateway_filter_rules")
+}
+
+// Phase 7 outbound — terminal agents enqueue here for external delivery.
+model OutboundEvent {
+  id              String  @id @default(uuid())
+  correlationId   String  @map("correlation_id")
+  eventName       String  @map("event_name")
+  eventId         String  @map("event_id")
+  payload         String  // JSON
+  expectAckEvent  String? @map("expect_ack_event")
+  status          String  @default("sent") // sent | pending | acknowledged | timeout | failed | chained
+  sentAt          String  @map("sent_at")
+  ackReceivedAt   String? @map("ack_received_at")
+  ackMessageId    Int?    @map("ack_message_id")
+  timeoutSeconds  Int     @default(300) @map("timeout_seconds")
+  extraMetadata   String? @map("extra_metadata") // JSON
+
+  @@index([correlationId])
+  @@index([status])
+  @@map("outbound_events")
+}
+
+// Inbound RaaS messages from external Kafka — full audit trail.
+model RaasMessage {
+  id                Int     @id @default(autoincrement())
+  receivedAt        String  @map("received_at")
+  topic             String
+  partition         Int     @default(0)
+  offset            Int
+  key               String?
+  data              String  // JSON
+  classification    String? // matched_valid | matched_invalid | unrecognized | parse_error
+  matchedEventDefId String? @map("matched_event_def_id")
+  validationErrors  String? @map("validation_errors") // JSON array
+  classifiedAt      String? @map("classified_at")
+  ingestionStatus   String? @map("ingestion_status") // pending | ingested | failed | skipped
+  ingestedAt        String? @map("ingested_at")
+
+  @@index([classification], map: "idx_raas_classification")
+  @@index([ingestionStatus], map: "idx_raas_ingestion_status")
+  @@map("raas_messages")
+}
+
+model RejectedMessage {
+  id           String  @id
+  rawPayload   String? @map("raw_payload")
+  rejectReason String  @map("reject_reason") // malformed_json | missing_event_name | unknown_source | out_of_domain
+  source       String?
+  receivedAt   String  @map("received_at")
+
+  @@map("rejected_messages")
+}
+
+model IngestionConfig {
+  id         String @id @default(uuid())
+  eventName  String @unique @map("event_name")
+  autoIngest Int    @default(0) @map("auto_ingest")
+  createdAt  String @map("created_at")
+  updatedAt  String @map("updated_at")
+
+  @@map("ingestion_configs")
+}
+
+model HealthIncident {
+  id            String  @id
+  healthState   String  @map("health_state") // YELLOW | RED
+  failedEvent   String? @map("failed_event")
+  failureReason String? @map("failure_reason")
+  agentName     String? @map("agent_name")
+  sampledAt     String  @map("sampled_at")
+  resolved      Int     @default(0)
+
+  @@map("health_incidents")
+}
+
+model ExecutionTrace {
+  id           String  @id @default(uuid())
+  triggerEvent String  @map("trigger_event")
+  mode         String  @default("simulated") // simulated | live
+  steps        String  @default("[]") // JSON array
+  summary      String  @default("{}") // JSON
+  startedAt    String  @map("started_at")
+  completedAt  String? @map("completed_at")
+  maxDepth     Int     @default(10) @map("max_depth")
+
+  @@map("execution_traces")
+}
+
+// =====================================================================
+// Schema status: 22 tables (10 P3-foundation + 12 chunk-1 additions).
 //
-// Add these as the corresponding service modules are ported in P3 Chunks
-// 2-5. Each addition runs `npm run db:push` and a migration test to verify
-// CRUD on the new table works against existing data.
+// Skipped for later (advanced ML/KB; not consumed by current AO routes —
+// add when their service modules get ported in chunk 2):
+//   - AgentEpisodeStats, AgentPattern, AgentSpan, AgentBlackboardEntry
+//
+// Definitively NOT migrating per Q1 + Q2 decisions:
+//   - Editor: ActionSnapshot, ActionDiff, ChangeLog, AgentTask,
+//     ReviewQueueEntry, VersionBranch, EditCheckpoint, DatasetSnapshot,
+//     SnapshotChangeRecord
+//   - Copilot: CopilotConversation, CopilotMessage
+//   - Studio/test: StudioReport, CardReport, SimulationSnapshot, test_*
+// =====================================================================
