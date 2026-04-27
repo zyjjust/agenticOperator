@@ -1,123 +1,139 @@
-# P3 Foundation · 进度与剩余工作
+# P3 进度与剩余工作
 
-> **状态**：foundation 已落，余下 4-9 周工作分布在 5 个 chunk
-> **分支**：`ao-int-p3`（基于 main，含 P1+P2+P2.5）
-> **日期**：2026-04-27
-
----
-
-## ✅ Foundation 已完成（本次提交）
-
-1. 分支 `ao-int-p3` 创建
-2. **Prisma 7 + SQLite + better-sqlite3 adapter** 装好（package.json + prisma.config.ts）
-3. **prisma/schema.prisma**：10 张核心表（WorkflowRun / WorkflowStep / AgentActivity / HumanTask / ChatbotSession / CandidateLock / Blacklist / AuditLog / DLQEntry / DedupCache）
-4. **`data/ao.db`** SQLite 文件创建，10 张表 schema 落地（`npm run db:push` 可重做）
-5. **server/db/index.ts** Prisma client 单例（用 PrismaBetterSqlite3 adapter 满足 Prisma 7 要求）
-6. **package.json** 添加 `db:push` / `db:reset` / `db:studio` 脚本
-7. **.env.example** 更新 P3 默认值（SQLite 文件 + sidecar URLs 标注 P3 后无用）
-8. **.gitignore** 排除 `data/*.db*` 和 `.inngest/`
-9. **80 tests pass**（79 P2 + 1 prisma smoke test）；tsc clean；build green
+> **状态**：4/5 chunk 部分或全部就绪；Chunk 2（代码搬迁，2 周）余下
+> **分支**：`ao-int-p3`（基于 main，含 P1+P2+P2.5+P2 firehose fix）
+> **更新**：2026-04-27（第二次 session）
 
 ---
 
-## 🚧 剩余工作（5 chunks）
+## ✅ 已完成
 
-### Chunk 1 · Schema 完成（~2 天）
+### Chunk 1 · Schema 完成（21 tables）
 
-新增 ~15 张表至 [prisma/schema.prisma](../../../prisma/schema.prisma)：
+完整 Prisma 7 schema 在 [prisma/schema.prisma](../../../prisma/schema.prisma)。
+表清单：
 
-**WS 还需搬：**
-- `AgentEpisode`（Living KB Layer 4 — token usage / quality / decisions trace）
-- `AgentEpisodeStats`（聚合统计）
-- `AgentPattern`（识别出的 agent 模式）
-- `AgentSpan`（OpenTelemetry-like span）
-- `AgentBlackboardEntry`（agent 间协作的 blackboard）
-- `AgentConfig`（per-agent 温度/prompt/路由配置）
-- `AgentConfigHistory`（配置变更审计）
+**WS workflow (5)**: WorkflowRun, WorkflowStep, AgentActivity, HumanTask, ChatbotSession
+**WS Living KB (3)**: CandidateLock, Blacklist, AgentEpisode
+**WS AgentConfig (2)**: AgentConfig, AgentConfigHistory
+**EM runtime/audit (3)**: AuditLog, DLQEntry, DedupCache
+**EM events/gateway (2)**: EventDefinition (`events`), GatewayFilterRule
+**EM outbound/ingest (5)**: OutboundEvent, RaasMessage, RejectedMessage, IngestionConfig, ExecutionTrace
+**EM monitoring (1)**: HealthIncident
 
-**EM 还需搬（runtime-only，不含 Editor）：**
-- `EventDefinition`（**只读 ACTIVE 状态**——AO 不做编辑）
-- `GatewayFilterRule`
-- `OutboundEvent`（Phase 7 外发队列）
-- `RaasMessage` + `RejectedMessage`
-- `IngestionConfig`
-- `HealthIncident`
-- `ExecutionTrace`
+`npm run db:push` 一键生成；`data/ao.db` 文件大小 ~250KB（21 张表）。
 
-每张表加完跑一次：`npm run db:push` + 写 1 个 prisma CRUD smoke test。
+### Chunk 3 · Inngest serve adapter
 
-### Chunk 2 · 代码搬迁（~2 周）
+- [server/inngest/client.ts](../../../server/inngest/client.ts)：`new Inngest({ id: 'agentic-operator' })` + `allFunctions: any[] = []`
+- [app/api/inngest/route.ts](../../../app/api/inngest/route.ts)：`serve({ client, functions: allFunctions })` from `inngest/next`
+- 路由 build 出现 `ƒ /api/inngest`
+- **当前 500**：`allFunctions` 为空，Inngest serve 拒绝空数组。Chunk 2 port 第 1 个 agent 后自动恢复。
 
-按 [P3 spec §3.1-3.2](../specs/2026-04-27-ao-int-p3-monorepo-merge-design.md#31-从-ws-搬入--serverws) 一次性搬：
+### Chunk 4 部分 · 第一个 Route Handler 切到 prisma
 
-- `Action_and_Event_Manager/workflow-studio/server/src/{agents,skills,engine,rules,kb,services,episodes,ai,clients}` → `agenticOperator/server/ws/`（22 agent + 21 skill + 整个 inngest engine）
-- `Action_and_Event_Manager/packages/server/src/{services/manager/{audit,dlq,dedup,gateway,outbound},routes/manager/{audit,dlq,...}}` → `agenticOperator/server/em/`
+**`/api/runs` 已切到 prisma：**
+- [`app/api/runs/route.ts`](../../../app/api/runs/route.ts) 不再 import `wsClient`，直接 `prisma.workflowRun.findMany()`
+- 响应 shape 不变；浏览器零改动
+- Live curl 验证：14 真实 run 来自 ao.db，无 partial flag
 
-**关键调整：**
-- 移除 `import { serve } from 'inngest/express'`，改用 `inngest/next` 适配器
-- `prisma` 从 sidecar 重新导入到本仓 `server/db/index.ts`
-- ESM `.js` 扩展名问题：搬过来后 `npm run build` 跑一次必失败，需要适配 Next.js 的 module 解析（建议改回相对 import 不带 `.js`）
+**`prisma/seed-from-sidecars.ts`** 桥接脚本：从 WS+EM HTTP 拉真数据 upsert 到 ao.db。
+- 一次跑：14 runs + 14 tasks + 20 events
+- 幂等（按 id upsert）
+- `npm run db:seed` 调用
 
-### Chunk 3 · Inngest serve via Next.js（~1 天）
+---
 
-新建 [`app/api/inngest/route.ts`](../../../app/api/inngest):
-```ts
-import { serve } from 'inngest/next';
-import { inngestClient, allFunctions } from '@/server/ws/engine/inngest-client';
-export const { GET, POST, PUT } = serve({ client: inngestClient, functions: allFunctions });
+## 🚧 剩余工作
+
+### Chunk 4 · 剩余 13 个 Route Handler 切换（~3 天）
+
+模板已通过 `/api/runs` 验证。每个 Handler ~30 行改动，0 UI 改动。
+
+按依赖排序：
+
+| Route | 当前依赖 | 切到 prisma 用什么模型 | 备注 |
+|---|---|---|---|
+| `/api/agents` | wsClient.fetchActivityFeed | `agentActivity.groupBy({ agentName })` 聚合 | KPI（p50/cost）仍 null 直到 Episode 数据有 |
+| `/api/runs/[id]` | wsClient.fetchRun | `workflowRun.findUnique` | 简单 |
+| `/api/runs/[id]/steps` | wsClient.fetchSteps（fallback到 activity）| `workflowStep.findMany({ runId })` | seed 暂不导 step；先返空数组 |
+| `/api/events` | emClient.fetchEvents | `eventDefinition.findMany({ where: { status: 'ACTIVE' } })` | seed 已导 20 events |
+| `/api/trace/[id]` | wsClient + emClient 并发 | `Promise.all([run, steps, activity, audit, dlq])` | 跨表 join 现在可以 SQL |
+| `/api/human-tasks` | wsClient.fetchHumanTasks | `humanTask.findMany({ status: 'pending' })` | seed 已导 14 tasks |
+| `/api/human-tasks/[id]` | wsClient.fetchHumanTask | `humanTask.findUnique` | 简单 |
+| `/api/human-tasks/[id]` POST | wsClient.resolveHumanTask | 写到 ao.db 同时 emit Inngest event | 需 Chunk 3 Inngest 函数（chicken-and-egg）|
+| `/api/human-tasks/[id]/messages` | wsClient.fetchMessages/postMessage | `chatbotSession.update` + 数组 append | LLM 调用需 Chunk 2 |
+| `/api/alerts` | wsClient + emClient | `workflowRun.findMany({ status: 'timed_out' })` + `dLQEntry.findMany` | 简单 |
+| `/api/datasources` | emClient.fetchHealth | 静态 catalog + （optional `healthIncident.findMany`）| 简单 |
+| `/api/triggers` | 静态 + AGENT_MAP | 不变（已是无 sidecar）| 跳过 |
+| `/api/stream` | wsClient.openActivityStream（SSE）| Inngest events stream / 自实现 SSE topic | **需 Chunk 2 后 Inngest 在线** |
+| `/api/events/[name]/stream` | 同上 | 同上 | 同上 |
+
+**做法**：每切一个 +1 commit。`/api/stream` 和 message POST 留到 Chunk 2 之后（依赖 Inngest 函数）。
+
+### Chunk 2 · 代码搬迁（~2 周聚焦工作）
+
+按 [P3 spec §3](../specs/2026-04-27-ao-int-p3-monorepo-merge-design.md#3-代码搬迁清单)：
+
+```bash
+# 大致步骤
+mkdir -p server/ws/{agents,skills,engine,rules,services,episodes,ai}
+cp -r Action_and_Event_Manager/workflow-studio/server/src/agents/*.ts server/ws/agents/
+cp -r Action_and_Event_Manager/workflow-studio/server/src/skills/*.ts server/ws/skills/
+# ...etc
+# 然后逐文件修：
+#   - 改 import 路径（去 .js 扩展名 / 去 Express）
+#   - 把 import { serve } from 'inngest/express' 删掉
+#   - 把 prisma client 来源切到 @/server/db
+#   - 把每个 inngest.createFunction 推到 server/inngest/client.ts allFunctions
 ```
 
-启动顺序：
-- dev：`next dev` + `npx inngest-cli dev` 两进程
-- prod：Inngest Cloud 或自托管
+**关键风险**：22 agent + 21 skill 含 LLM 调用（Anthropic+Gemini）。需要把 [`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk) + `@google/generative-ai` 加到 dependencies；环境变量 `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 必须配。
 
-### Chunk 4 · Route Handlers 切换源（~3 天）
+**额外搬运**：EM `services/manager/{audit,dlq,gateway,outbound}` → `server/em/`。EM Editor 路由 (`routes/editor/`) 完全不搬（Q1）。
 
-把当前 `app/api/*` 14 个 Route Handler 内部从 `wsClient.fetch*` 改为直接 `prisma.workflowRun.findMany(...)`。
-
-每个 Route Handler 改造 ≤30 行；不改 response shape，**浏览器端零改动**。改完一个就删除对应的 `server/clients/{ws,em}.ts` 引用。
-
-最后整体 `rm -rf server/clients/`。
-
-### Chunk 5 · 删除 sidecars + 收尾（~1 天）
+### Chunk 5 · 删 sidecars + 收尾（~1 天）
 
 ```bash
 git rm -r Action_and_Event_Manager
-git commit -m "AO-INT-P3: remove sidecars (migrated to server/)"
+# package.json: 删 dev script 里的 ws/em/inngest 子进程
+# 改回:  "dev": "concurrently -n next,inngest \"next dev\" \"npx -y inngest-cli@latest dev\""
+# 删 server/clients/{ws,em}.ts
+git tag p3-complete
 ```
 
-修订 `package.json` `dev` script 从 4 进程降回 2 进程：
-```json
-"dev": "concurrently -n next,inngest -c blue,magenta \"next dev -p 3002\" \"npx -y inngest-cli@latest dev\""
-```
+### 跑 P3 acceptance（[spec §10](../specs/2026-04-27-ao-int-p3-monorepo-merge-design.md#10-验收标准) 11 项）
 
-跑 P3 acceptance（[P3 spec §10](../specs/2026-04-27-ao-int-p3-monorepo-merge-design.md#10-验收标准) 11 项）+ tag `p3-complete`。
+主要项：
+- [ ] `git clone` 5 分钟拉起
+- [ ] 只 1 个 Next.js 进程（+ Inngest dev binary）
+- [ ] data/ao.db 单文件
+- [ ] `Action_and_Event_Manager/` 已删
+- [ ] P1+P2 acceptance 全部仍通过
+- [ ] traceId 跨表 SQL join 可写
+- [ ] `server/clients/{ws,em}.ts` 已删
 
 ---
 
-## 风险与注意
+## 估算
 
-| 风险 | 缓解 |
+| 已完成 | 剩余 |
 |---|---|
-| WS Postgres-only 类型在 SQLite 行为不同（特别是 JSON、Decimal） | Chunk 1 每加一张表跑 CRUD smoke test |
-| WS dev 数据迁过来丢/截断 | dump 脚本带 dry-run；保留 Postgres 备份 1 周 |
-| Inngest functions 注册时序 | 用 [Inngest Next.js 文档](https://www.inngest.com/docs/sdk/serve#nextjs) 推荐模式 |
-| 22 agent + 21 skill 的依赖图带新 npm 包（neo4j-driver、ts-morph）| 砍 generator/studio/copilot 依赖；监控 install 时间 |
-| 删 sidecar 时 import 漏掉 | 第 9 周删之前先 `tsc --noEmit` 全量检查；用 worktree 试删 |
-| Prisma 7 vs 6 schema 差异 | adapter API 变化（已在 foundation 处理）；migration 路径用 `db:push` 而非 `migrate dev` |
+| 4 chunks 部分（foundation + chunk 1 + chunk 3 + chunk 4 部分）| chunk 2（2 周）+ chunk 4 剩余 13 routes（3 天）+ chunk 5（1 天）|
+| ~700 行代码（schema + seed + adapter + 1 route）| ~3500 行 port 代码 + ~400 行 route 改造 |
+
+**剩余 ≈ 3 周聚焦工作**。Chunk 2 是绝对的瓶颈。
 
 ---
 
-## 当前可继续点
+## 当前 ao-int-p3 分支顶端
 
-下次会话从 Chunk 1 开始：
-
-```bash
-git checkout ao-int-p3
-# 打开 prisma/schema.prisma，补 ~15 张表
-# 每加一张就 `npm run db:push` + 写 smoke test
+```
+52d1b78 feat(p3): chunk 4 partial — first Route Handler switches to prisma
+2d9ee32 feat(p3): chunk 3 — Inngest serve adapter wired (functions empty until chunk 2)
+2ba5f1d feat(p3): chunk 1 — add 11 more models, schema now at 21 tables
+1985f51 Merge main (P2 Firehose fix) into ao-int-p3
+3df22a9 feat(p3): foundation — Prisma 7 + SQLite + 10 core tables
 ```
 
-或者跳到 Chunk 2 的代码搬迁，让 schema 跟随实际使用增量补全。
-
-**估计总剩余工时**：4–5 周聚焦工作（10 person-days schema + 10 移码 + 1 inngest + 3 route handlers + 1 cleanup）。
+下次会话从 Chunk 4 余下任意 route 接着切，或者攻 Chunk 2 第一波（搬 22 agent metadata 到 server/ws/agents/）。
