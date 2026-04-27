@@ -3,6 +3,8 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
+import { fetchJson } from "@/lib/api/client";
+import type { RunsResponse, RunSummary } from "@/lib/api/types";
 
 type RunStatus = "running" | "review" | "ok" | "err";
 type Run = {
@@ -18,10 +20,61 @@ type Run = {
 
 type EventKind = "ok" | "warn" | "err" | "tool" | "hitl";
 
+// Map P1 RunStatus (7 values) → legacy /live status enum (4 values).
+function liveStatusFor(s: RunSummary["status"]): RunStatus {
+  if (s === "running" || s === "paused") return "running";
+  if (s === "suspended") return "review";
+  if (s === "completed") return "ok";
+  return "err"; // failed | timed_out | interrupted
+}
+
+function durationFor(r: RunSummary): string {
+  const start = new Date(r.startedAt).getTime();
+  const end = r.completedAt ? new Date(r.completedAt).getTime() : new Date(r.lastActivityAt).getTime();
+  const ms = Math.max(0, end - start);
+  const s = Math.floor(ms / 1000);
+  const hh = String(Math.floor(s / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function startedFor(r: RunSummary): string {
+  const d = new Date(r.startedAt);
+  if (isNaN(d.getTime())) return "—";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 export function LiveContent() {
   const { t } = useApp();
+  const [liveRuns, setLiveRuns] = React.useState<Run[] | null>(null);
+  const [partialFlag, setPartialFlag] = React.useState(false);
 
-  const runs: Run[] = [
+  React.useEffect(() => {
+    fetchJson<RunsResponse>("/api/runs?limit=6")
+      .then((res) => {
+        if (res.meta.partial?.includes("ws")) setPartialFlag(true);
+        if (res.runs.length === 0) {
+          // No runs yet — keep using mock so the demo still shows shape
+          setLiveRuns(null);
+          return;
+        }
+        const mapped: Run[] = res.runs.map((r, i) => ({
+          id: r.id,
+          job: `${r.triggerData.client} · ${r.triggerData.jdId}`,
+          started: startedFor(r),
+          dur: durationFor(r),
+          status: liveStatusFor(r.status),
+          tokens: "—",
+          cost: "—",
+          current: i === 0,
+        }));
+        setLiveRuns(mapped);
+      })
+      .catch(() => setPartialFlag(true));
+  }, []);
+
+  const mockRuns: Run[] = [
     { id: "RUN-J2041", job: "工行 · 高级后端工程师 · 上海", started: "14:02", dur: "00:04:21", status: "running", tokens: "1.82M", cost: "¥12.41", current: true },
     { id: "RUN-J2040", job: "平安 · ML 工程师 · 远程", started: "13:58", dur: "00:02:14", status: "review", tokens: "612k", cost: "¥4.80" },
     { id: "RUN-J2039", job: "微众 · 产品设计师 · 北京", started: "13:41", dur: "00:03:02", status: "ok", tokens: "841k", cost: "¥5.32" },
@@ -96,7 +149,11 @@ export function LiveContent() {
       <aside className="border-r border-line bg-surface flex flex-col min-h-0">
         <div className="border-b border-line flex items-center gap-2" style={{ padding: "12px 14px" }}>
           <div className="flex-1 text-[13px] font-semibold">{t("nav_runs")}</div>
-          <Badge variant="info" dot>{t("realtime")}</Badge>
+          {partialFlag ? (
+            <Badge variant="warn" dot>{t("ui_partial_data")}</Badge>
+          ) : (
+            <Badge variant="info" dot>{t("realtime")}</Badge>
+          )}
         </div>
         <div className="border-b border-line flex gap-1.5" style={{ padding: "8px 10px" }}>
           <Btn size="sm" style={{ flex: 1 }}>全部</Btn>
@@ -104,7 +161,7 @@ export function LiveContent() {
           <Btn size="sm" variant="ghost">失败</Btn>
         </div>
         <div className="flex-1 overflow-auto">
-          {runs.map((r) => (
+          {(liveRuns ?? mockRuns).map((r) => (
             <div
               key={r.id}
               className="cursor-pointer border-b border-line"
