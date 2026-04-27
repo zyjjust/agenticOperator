@@ -39,6 +39,7 @@ export function LeftNav() {
     { type: "item", id: "workflows",  icon: "workflow", label: t("nav_workflows"), count: "1", href: "/workflow" },
     { type: "item", id: "events",     icon: "bolt",     label: t("nav_events"), href: "/events" },
     { type: "item", id: "triggers",   icon: "clock",    label: t("nav_triggers"), href: "/triggers" },
+    { type: "item", id: "agent-demo", icon: "sparkle",  label: "Sample Agent", href: "/agent-demo" },
     { type: "item", id: "integrations", icon: "plug",   label: t("nav_integrations"), href: "/datasources" },
     { type: "group", title: t("nav_group_govern") },
     { type: "item", id: "permissions",icon: "key",      label: t("nav_permissions"), href: "#" },
