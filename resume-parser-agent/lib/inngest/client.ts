@@ -123,6 +123,76 @@ export type MatchPassedNeedInterviewData = {
   error?: string;
 };
 
+// ─── §3.4 JD 生成相关事件 ─────────────────────────────────
+//
+// REQUIREMENT_LOGGED (RAAS → AO)：raw_input_data 28 字段平铺在 payload 里。
+// 这里只声明顶层壳；具体 28 字段类型在 createJdAgent 内部定义。
+export type RequirementLoggedData = {
+  entity_type?: string;
+  entity_id?: string | null;
+  event_id?: string;
+  payload?: Record<string, unknown>;   // 含 raw_input_data 等
+  trace?: {
+    trace_id?: string | null;
+    request_id?: string | null;
+    workflow_id?: string | null;
+    parent_trace_id?: string | null;
+  };
+};
+
+// JD_GENERATED (AO → RAAS)：partner-canonical 15 字段 + AO bookkeeping
+export type JdGeneratedPayload = {
+  // 15 partner spec fields
+  job_requisition_id: string;
+  client_id: string | null;
+  posting_title: string;
+  posting_description: string;
+  city: string[];
+  salary_range: string;
+  interview_mode: string;
+  degree_requirement: string;
+  education_requirement: string;
+  work_years: number;
+  recruitment_type: string;
+  must_have_skills: string[];
+  nice_to_have_skills: string[];
+  negative_requirement: string;
+  language_requirements: string;
+  expected_level: string;
+
+  // 发布渠道用的 2 段独立字段
+  responsibility: string;
+  requirement: string;
+
+  // bookkeeping
+  jd_id: string;
+  claimer_employee_id: string | null;
+  hsm_employee_id: string | null;
+  client_job_id: string | null;
+
+  // 诊断字段（RAAS 可忽略）
+  search_keywords: string[];
+  quality_score: number;
+  quality_suggestions: string[];
+  market_competitiveness: '高' | '中' | '低';
+  generator_version: string;
+  generator_model: string;
+  generated_at: string;
+};
+
+export type JdGeneratedEnvelope = {
+  entity_type: 'JobDescription';
+  entity_id: string | null;
+  event_id: string;
+  payload: JdGeneratedPayload;
+  trace?: {
+    trace_id?: string | null;
+    request_id?: string | null;
+    workflow_id?: string | null;
+    parent_trace_id?: string | null;
+  };
+};
+
 // ─── EventSchemas ──────────────────────────────────────────
 type Events = {
   RESUME_DOWNLOADED: { data: ResumeDownloadedData };
@@ -130,6 +200,11 @@ type Events = {
   MATCH_PASSED_NEED_INTERVIEW: { data: MatchPassedNeedInterviewData };
   MATCH_PASSED_NO_INTERVIEW: { data: MatchPassedNeedInterviewData };
   MATCH_FAILED: { data: MatchPassedNeedInterviewData };
+  // ── JD 生成链 ──
+  REQUIREMENT_LOGGED: { data: RequirementLoggedData };
+  CLARIFICATION_READY: { data: RequirementLoggedData };  // 同 shape，下游也是 createJdAgent
+  JD_REJECTED: { data: RequirementLoggedData };          // 同 shape
+  JD_GENERATED: { data: JdGeneratedEnvelope };
 };
 
 export const inngest = new Inngest({
