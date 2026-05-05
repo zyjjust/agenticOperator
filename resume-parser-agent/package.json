@@ -1,0 +1,31 @@
+{
+  "name": "resume-parser-agent",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev -p 3020",
+    "build": "next build",
+    "start": "next start -p 3020",
+    "register": "tsx --env-file=.env.local scripts/register-with-inngest.ts",
+    "publish:test": "tsx --env-file=.env.local scripts/publish-test-event.ts",
+    "minio:list": "tsx --env-file=.env.local scripts/list-minio-resumes.ts",
+    "minio:pick": "tsx --env-file=.env.local scripts/pick-test-resume.ts"
+  },
+  "dependencies": {
+    "inngest": "^3.52.7",
+    "minio": "^8.0.7",
+    "next": "^15.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
+  }
+}

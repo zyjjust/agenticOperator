@@ -1,0 +1,48 @@
+# Dockerized Inngest dev server — 项目无关 / 通用 event bus
+#
+# 这个容器**不绑定任何具体项目**：
+#   - 没有 -u 参数硬编码 SDK URL
+#   - 任何 SDK（AO / RAAS / partner）启动时自己 PUT 来 register
+#
+# 如要彻底关掉 Inngest 启动时对常见端口的扫描（autodiscovery），把
+# `--no-discovery` 加到 command 里。当前保留 autodiscovery，方便本机
+# Next dev 自动连。
+#
+# Usage:
+#   docker compose -f docker-compose.inngest.yml up -d
+#   docker compose -f docker-compose.inngest.yml logs -f
+#   docker compose -f docker-compose.inngest.yml restart
+#   docker compose -f docker-compose.inngest.yml down            # 保留 volume
+#   docker compose -f docker-compose.inngest.yml down -v         # 清 volume
+#
+# 保留 named volume `agenticoperator_inngest-data` —— 与之前手动 docker run
+# 同名，重建容器不丢历史事件 / runs。
+
+services:
+  inngest:
+    image: inngest/inngest:latest
+    container_name: ao-inngest
+    restart: unless-stopped
+    command:
+      - inngest
+      - dev
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8288"
+      - --persist
+      # 启动时主动 sync AO main repo 的 SDK。partner / 其他 SDK
+      # 不自动 sync —— 它们用各自的 Inngest client 启动时自己 PUT
+      # 注册到本 dev server 即可。
+      - -u
+      - "http://host.docker.internal:3002/api/inngest"
+    ports:
+      - "0.0.0.0:8288:8288"   # 显式 IPv4 绑定（避开 macOS Docker IPv6-only 行为）
+      - "0.0.0.0:8289:8289"   # connect-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - inngest-data:/var/lib/inngest
+
+volumes:
+  inngest-data:

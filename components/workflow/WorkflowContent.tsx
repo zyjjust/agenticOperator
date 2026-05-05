@@ -3,6 +3,7 @@ import React from "react";
 import { useApp } from "@/lib/i18n";
 import { Ic, IcName } from "@/components/shared/Ic";
 import { Badge, Btn } from "@/components/shared/atoms";
+import { AgenticToggle } from "@/components/shared/AgenticToggle";
 import { WORKFLOW_META } from "@/lib/workflow-meta";
 import { fetchJson } from "@/lib/api/client";
 
@@ -104,6 +105,8 @@ export function WorkflowContent() {
           {activeAgents.size > 0 ? `${activeAgents.size} 个 agent 活跃中` : "空闲"}
         </Badge>
         <Badge variant="info">{WORKFLOW_META.version} · {WORKFLOW_META.status}</Badge>
+        <div className="w-px h-5 bg-line" />
+        <AgenticToggle />
         <div className="w-px h-5 bg-line" />
         <Btn size="sm"><Ic.clock /> 版本历史</Btn>
         <Btn size="sm"><Ic.play /> 试运行</Btn>

@@ -16,7 +16,12 @@ import { Inngest } from "inngest";
 // inngest@^4 reads INNGEST_DEV / INNGEST_BASE_URL automatically; we just
 // pass id + (optionally) eventKey. Setting INNGEST_DEV=<url> makes both
 // .send() and the serve handler use that URL as the dev server.
+// Note: app id is "agentic-operator-main" to avoid colliding with the
+// older sibling prototype `resume-parser-agent/` which also registers
+// itself as `agentic-operator` on the same Inngest dev server. With
+// distinct ids both apps get their own slot and the dev server fans
+// out RESUME_DOWNLOADED to both subscribers.
 export const inngest = new Inngest({
-  id: "agentic-operator",
+  id: "agentic-operator-main",
   eventKey: process.env.INNGEST_EVENT_KEY,
 });

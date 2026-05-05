@@ -1,11 +1,15 @@
-// /api/workflow/active — list AgentActivity rows from the last 5 minutes
-// for the workflow page banner.
+// /api/workflow/active — list AgentActivity rows from the last 60 minutes
+// for the workflow page banner. Window widened from 5min → 60min so the
+// banner stays populated between bursts of partner traffic (a typical
+// fan-out completes in ~5min, but there can be a long quiet stretch
+// before the next upload). Visual goal: "what ran recently", not "what's
+// literally running this second".
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/server/db";
 
 export async function GET(): Promise<Response> {
-  const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+  const cutoff = new Date(Date.now() - 60 * 60 * 1000);
   try {
     const rows = await prisma.agentActivity.findMany({
       where: { createdAt: { gte: cutoff } },

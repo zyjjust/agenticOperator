@@ -5,8 +5,12 @@ import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
 import { EVENT_CATALOG, EventDef, kindDot, STAGE_LABELS } from "@/lib/events-catalog";
 import { fetchJson } from "@/lib/api/client";
-import { useSSE } from "@/lib/api/sse";
-import type { EventsResponse, ActivityEvent } from "@/lib/api/types";
+import type { EventsResponse } from "@/lib/api/types";
+import {
+  useInngestEvents,
+  type InngestEventRow,
+  type UseInngestEventsResult,
+} from "@/lib/api/inngest-events";
 
 // Convert API EventContract → legacy EventDef shape.
 function toLegacy(c: EventsResponse["events"][number]): EventDef {
@@ -27,11 +31,21 @@ function toLegacy(c: EventsResponse["events"][number]): EventDef {
 }
 
 export function EventsContent() {
-  const { t } = useApp();
   const [selectedName, setSelectedName] = React.useState("ANALYSIS_COMPLETED");
   const [tab, setTab] = React.useState("overview");
   const [query, setQuery] = React.useState("");
   const [apiEvents, setApiEvents] = React.useState<EventDef[] | null>(null);
+
+  // Live Inngest stream — shared between header KPIs and the right sidebar.
+  const [streamPaused, setStreamPaused] = React.useState(false);
+  const [includeShared, setIncludeShared] = React.useState(false);
+  const [streamFilter, setStreamFilter] = React.useState("");
+  const stream = useInngestEvents({
+    paused: streamPaused,
+    intervalMs: 2000,
+    limit: 100,
+    includeShared,
+  });
 
   React.useEffect(() => {
     fetchJson<EventsResponse>("/api/events")
@@ -54,25 +68,53 @@ export function EventsContent() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <EMSubHeader />
+      <EMSubHeader stream={stream} />
       <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "300px 1fr 340px" }}>
         <EventRegistry grouped={grouped} selectedName={selectedName} onSelect={setSelectedName} query={query} setQuery={setQuery} />
         <EventDetail event={selected} tab={tab} setTab={setTab} />
-        <EventLiveStream />
+        <EventLiveStream
+          stream={stream}
+          paused={streamPaused}
+          setPaused={setStreamPaused}
+          includeShared={includeShared}
+          setIncludeShared={setIncludeShared}
+          filter={streamFilter}
+          setFilter={setStreamFilter}
+        />
       </div>
     </div>
   );
 }
 
-function EMSubHeader() {
+function EMSubHeader({ stream }: { stream: UseInngestEventsResult }) {
   const { t } = useApp();
+
+  // Real counts derived from the live Inngest poll.
+  const oneMinAgo = Date.now() - 60_000;
+  const last1m = stream.events.reduce((acc, e) => {
+    const ts =
+      e.ts ??
+      (e.received_at ? new Date(e.received_at).getTime() : 0);
+    return ts >= oneMinAgo ? acc + 1 : acc;
+  }, 0);
+
+  const inngestOk = stream.connected && !stream.error;
+  const inngestValue = !stream.lastFetchAt
+    ? "…"
+    : stream.error
+    ? "ERR"
+    : "OK";
+  const inngestDelta = stream.lastFetchAt
+    ? `${stream.sources.join("+") || "local"} · ${stream.lastFetchAt.toLocaleTimeString(undefined, { hour12: false })}`
+    : "connecting…";
+
   const stats = [
-    { label: "events · 1m", value: "4,827", delta: "+12%", tone: "up" },
+    { label: "events · 1m", value: last1m.toLocaleString(), delta: stream.connected ? "live" : "—", tone: stream.connected ? "up" : "muted" },
     { label: "functions", value: "28 / 29", delta: "1 paused", tone: "muted" },
     { label: t("em_backlog"), value: "142", delta: "−38", tone: "up" },
     { label: t("em_dlq"), value: "6", delta: "+2", tone: "down" },
     { label: "P95 delivery", value: "84ms", delta: "→ SLA", tone: "muted" },
-    { label: "Inngest 连接", value: "OK", delta: "eu-west-1 · v1.4", tone: "up" },
+    { label: "Inngest 连接", value: inngestValue, delta: inngestDelta, tone: inngestOk ? "up" : stream.error ? "down" : "muted" },
   ];
   return (
     <div className="border-b border-line bg-surface flex items-center gap-4.5" style={{ padding: "14px 22px", gap: 18 }}>
@@ -849,43 +891,135 @@ function TabLogs({ event }: { event: EventDef }) {
   );
 }
 
-function EventLiveStream() {
-  const { t } = useApp();
-  const [paused, setPaused] = React.useState(false);
-  const [items, setItems] = React.useState<StreamItem[]>(() => seedStream());
+type EventLiveStreamProps = {
+  stream: UseInngestEventsResult;
+  paused: boolean;
+  setPaused: (p: boolean | ((prev: boolean) => boolean)) => void;
+  includeShared: boolean;
+  setIncludeShared: (v: boolean) => void;
+  filter: string;
+  setFilter: (s: string) => void;
+};
 
+function EventLiveStream({
+  stream,
+  paused,
+  setPaused,
+  includeShared,
+  setIncludeShared,
+  filter,
+  setFilter,
+}: EventLiveStreamProps) {
+  const { t } = useApp();
+
+  const filtered = React.useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return stream.events;
+    return stream.events.filter((e) => {
+      if (e.name.toLowerCase().includes(q)) return true;
+      const d = e.data as { payload?: Record<string, unknown>; entity_id?: unknown } | null;
+      const p = d?.payload as Record<string, unknown> | undefined;
+      const fields = [
+        p?.job_requisition_id,
+        p?.client_req_id,
+        p?.requirement_id,
+        p?.jd_id,
+        p?.client_id,
+        d?.entity_id,
+      ];
+      return fields.some((v) => v != null && String(v).toLowerCase().includes(q));
+    });
+  }, [stream.events, filter]);
+
+  // Track which IDs have been rendered before so first-time IDs flash briefly.
+  const seenIds = React.useRef<Set<string>>(new Set());
+  const [freshIds, setFreshIds] = React.useState<Set<string>>(new Set());
   React.useEffect(() => {
     if (paused) return;
-    const id = setInterval(() => {
-      setItems((prev) => [randomEvent(), ...prev].slice(0, 20));
-    }, 1400);
-    return () => clearInterval(id);
-  }, [paused]);
+    const fresh = new Set<string>();
+    for (const e of stream.events) {
+      if (!seenIds.current.has(e.id)) {
+        fresh.add(e.id);
+        seenIds.current.add(e.id);
+      }
+    }
+    if (fresh.size === 0) return;
+    setFreshIds(fresh);
+    const tid = setTimeout(() => setFreshIds(new Set()), 900);
+    return () => clearTimeout(tid);
+  }, [stream.events, paused]);
+
+  const stateBadge = paused
+    ? { variant: "info" as const, label: "paused" }
+    : stream.error
+    ? { variant: "warn" as const, label: "error" }
+    : stream.connected
+    ? { variant: "ok" as const, label: "live" }
+    : { variant: "info" as const, label: "connecting…" };
 
   return (
     <aside className="border-l border-line bg-surface flex flex-col min-h-0">
       <div className="border-b border-line flex items-center gap-2" style={{ padding: "12px 14px" }}>
         <div className="text-[13px] font-semibold flex-1">{t("em_stream")}</div>
-        <Badge variant="info" dot>{paused ? "paused" : "live"}</Badge>
+        <Badge variant={stateBadge.variant} dot>{stateBadge.label}</Badge>
         <Btn size="sm" variant="ghost" style={{ padding: "0 6px" }} onClick={() => setPaused((p) => !p)}>
           {paused ? <Ic.play /> : <Ic.pause />}
         </Btn>
       </div>
-      <div className="border-b border-line flex gap-1.5" style={{ padding: "8px 10px" }}>
-        <input
-          placeholder="filter: name, job_id…"
-          className="flex-1 h-6 border border-line bg-panel rounded-sm mono text-[10.5px] text-ink-1 outline-none"
-          style={{ padding: "0 8px" }}
-        />
-        <Btn size="sm" variant="ghost" style={{ padding: "0 6px" }} title="filter"><Ic.grid /></Btn>
+
+      <div className="border-b border-line flex flex-col gap-1.5" style={{ padding: "8px 10px" }}>
+        <div className="flex gap-1.5">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="filter: name, job_id…"
+            className="flex-1 h-6 border border-line bg-panel rounded-sm mono text-[10.5px] text-ink-1 outline-none"
+            style={{ padding: "0 8px" }}
+          />
+          {filter && (
+            <Btn size="sm" variant="ghost" style={{ padding: "0 6px" }} onClick={() => setFilter("")} title="clear filter">
+              <span className="text-[12px] leading-none">×</span>
+            </Btn>
+          )}
+        </div>
+        <label className="flex items-center gap-1.5 text-[10.5px] text-ink-3 cursor-pointer mono">
+          <input
+            type="checkbox"
+            checked={includeShared}
+            onChange={(e) => setIncludeShared(e.target.checked)}
+          />
+          include shared bus (RAAS)
+        </label>
       </div>
+
+      {stream.error && (
+        <div
+          className="border-b border-line mono text-[10.5px]"
+          style={{ padding: "6px 12px", background: "var(--c-warn-bg)", color: "var(--c-warn)" }}
+        >
+          ⚠ {stream.error}
+        </div>
+      )}
+
       <div className="flex-1 overflow-auto min-h-0">
-        {items.map((e, i) => (
-          <StreamRow key={e.id} e={e} isNew={i === 0 && !paused} />
+        {filtered.length === 0 && (
+          <div className="text-ink-3 text-[12px]" style={{ padding: 18, textAlign: "center" }}>
+            {stream.connected
+              ? "无事件 — 触发 /agent-demo 或等 RAAS 推送"
+              : "正在连接 Inngest…"}
+          </div>
+        )}
+        {filtered.map((e) => (
+          <StreamRow key={e.id} ev={e} fresh={freshIds.has(e.id)} />
         ))}
       </div>
+
       <div className="border-t border-line flex items-center text-[11px] text-ink-4" style={{ padding: "10px 14px" }}>
-        <span className="mono">{items.length} shown · 4,827/min</span>
+        <span className="mono">
+          {filtered.length} shown
+          {filter && ` · of ${stream.events.length}`}
+          {stream.lastFetchAt && ` · ${stream.lastFetchAt.toLocaleTimeString(undefined, { hour12: false })}`}
+        </span>
         <div className="flex-1" />
         <Btn size="sm" variant="ghost" style={{ padding: "0 6px" }}>{t("em_replay")}</Btn>
       </div>
@@ -893,28 +1027,40 @@ function EventLiveStream() {
   );
 }
 
-type StreamItem = {
-  id: string;
-  name: string;
-  isErr: boolean;
-  t: string;
-  job: string;
-  tenant: string;
-  sub: string;
-};
+function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const def = EVENT_CATALOG.find((x) => x.name === ev.name);
+  const isErr = def?.kind === "error" || def?.kind === "gate";
+  const dot = kindDot(def?.kind ?? "domain");
 
-function StreamRow({ e, isNew }: { e: StreamItem; isNew: boolean }) {
-  const [fresh, setFresh] = React.useState(isNew);
-  React.useEffect(() => {
-    if (!fresh) return;
-    const id = setTimeout(() => setFresh(false), 900);
-    return () => clearTimeout(id);
-  }, [fresh]);
-  const ev = EVENT_CATALOG.find((x) => x.name === e.name);
-  const dot = kindDot(ev?.kind || "domain");
+  const tsMs = ev.received_at
+    ? new Date(ev.received_at).getTime()
+    : ev.ts ?? 0;
+  const time = tsMs
+    ? new Date(tsMs).toLocaleTimeString(undefined, { hour12: false }) +
+      "." +
+      String(tsMs % 1000).padStart(3, "0")
+    : "—";
+
+  const dataObj = (ev.data ?? {}) as { payload?: Record<string, unknown>; entity_id?: unknown };
+  const payload = dataObj.payload ?? {};
+  const job =
+    (payload.job_requisition_id as string) ??
+    (payload.requirement_id as string) ??
+    (payload.client_req_id as string) ??
+    (payload.jd_id as string) ??
+    (dataObj.entity_id as string) ??
+    "—";
+  const tenant =
+    (payload.client_id as string) ??
+    (payload.tenant as string) ??
+    "—";
+  const sub = def?.subscribers?.[0] ?? "—";
+
   return (
     <div
-      className="flex items-start gap-2 border-b border-line transition-colors"
+      onClick={() => setExpanded((v) => !v)}
+      className="flex items-start gap-2 border-b border-line transition-colors cursor-pointer"
       style={{
         padding: "8px 12px",
         background: fresh ? "color-mix(in oklab, var(--c-accent) 10%, transparent)" : "transparent",
@@ -929,61 +1075,42 @@ function StreamRow({ e, isNew }: { e: StreamItem; isNew: boolean }) {
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 mb-0.5">
-          <span className="mono text-[10px] text-ink-4">{e.t}</span>
+          <span className="mono text-[10px] text-ink-4">{time}</span>
           <span
             className="mono text-[11px] font-semibold"
-            style={{ color: e.isErr ? "var(--c-err)" : "var(--c-ink-1)" }}
+            style={{ color: isErr ? "var(--c-err)" : "var(--c-ink-1)" }}
           >
-            {e.name}
+            {ev.name}
           </span>
+          {ev._source && ev._source !== "local" && (
+            <Badge variant="warn">{ev._source}</Badge>
+          )}
         </div>
         <div className="mono text-[10px] text-ink-4 overflow-hidden text-ellipsis whitespace-nowrap">
-          job={e.job} · tenant={e.tenant} · {e.sub}
+          job={String(job).slice(-20)} · tenant={String(tenant).slice(-14)} · {sub}
         </div>
+        {expanded && (
+          <pre
+            className="mono text-[10px] mt-1.5 rounded-sm overflow-auto"
+            style={{
+              padding: 8,
+              maxHeight: 200,
+              background: "var(--c-panel)",
+              border: "1px solid var(--c-line)",
+              color: "var(--c-ink-2)",
+              lineHeight: 1.4,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {JSON.stringify({ id: ev.id, name: ev.name, ts: ev.ts, received_at: ev.received_at, data: ev.data }, null, 2)}
+          </pre>
+        )}
       </div>
     </div>
   );
 }
 
-function seedStream(): StreamItem[] {
-  const now = new Date();
-  const out: StreamItem[] = [];
-  for (let i = 0; i < 16; i++) {
-    const d = new Date(now.getTime() - i * 4200);
-    out.push(randomEvent(d));
-  }
-  return out;
-}
-
-let _ctr = 1000;
-function randomEvent(dateOverride?: Date): StreamItem {
-  const d = dateOverride || new Date();
-  const pool = EVENT_CATALOG.filter((e) => e.rate > 20);
-  const ev = pool[Math.floor(Math.random() * pool.length)];
-  const tenants = ["icbc", "ping-an", "weipinhui", "bytedance", "didi", "alibaba"];
-  const jobs = ["JD-2041", "JD-2039", "JD-2037", "JD-2033", "JD-2029", "JD-2024"];
-  _ctr += 1;
-  return {
-    id: "evt_" + _ctr,
-    name: ev.name,
-    isErr: ev.kind === "error" || ev.kind === "gate",
-    t: d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0"),
-    job: jobs[Math.floor(Math.random() * jobs.length)],
-    tenant: tenants[Math.floor(Math.random() * tenants.length)],
-    sub: ev.subscribers[0],
-  };
-}
-
 const FIREHOSE_MAX = 200;
-
-type InngestEventRow = {
-  id: string;
-  name: string;
-  data: unknown;
-  ts?: number;
-  received_at?: string;
-  _source?: string;
-};
 
 function TabFirehose({ event }: { event: EventDef }) {
   const { t } = useApp();

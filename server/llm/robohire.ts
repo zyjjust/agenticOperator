@@ -1,14 +1,19 @@
 // RoboHire client — production resume parsing & matching SaaS.
-// API docs: spec doc resume-agent-engineering-spec.md §7.2
+// API docs: docs/api-external-resume-parsing-and-matching.md
 //
 // Two endpoints used:
 //   POST /api/v1/parse-resume   multipart, body: file=PDF binary, max 10MB
-//   POST /api/v1/match-resume   JSON, body: { resume, jd, ... }
+//   POST /api/v1/match-resume   JSON,      body: { resume, jd, ... }
 //
-// Auth: Authorization: Bearer ${ROBOHIRE_API_KEY}
+// Auth:    Authorization: Bearer ${ROBOHIRE_API_KEY}
 // Latency: parse 3-8s, match 5-15s. Configurable timeout (default 120s).
-
-import type { ParsedResume } from "./resume-extractor";
+//
+// IMPORTANT — return shape is RAW.
+// Per partner spec §4 ("payload.parsed.data 内的 schema 就是 RoboHire
+// /api/v1/parse-resume response 里的 data 字段，原样转发即可，不需要任何
+// 字段重命名 / 拍扁"), this client returns RoboHire's `data` field
+// verbatim. The caller is expected to dump it directly into
+// `payload.parsed.data` (and `payload.match.data` for match outcomes).
 
 const BASE = process.env.ROBOHIRE_BASE_URL ?? "https://api.robohire.io";
 const KEY = process.env.ROBOHIRE_API_KEY ?? "";
@@ -30,14 +35,14 @@ export function isRoboHireConfigured(): boolean {
 }
 
 // ─── parse-resume ──────────────────────────────────────────────────
-// Accepts a Buffer (PDF, docx, etc.) and returns the structured fields.
-// Output is normalized to ParsedResume (the same shape gemini/stub use)
-// so the agent doesn't care which path produced the data.
 
 export type RoboHireParseResult = {
-  parsed: ParsedResume;
+  /** RoboHire response `data` field — passed through verbatim. */
+  data: Record<string, unknown>;
   requestId: string;
   cached: boolean;
+  documentId?: string;
+  savedAs?: string;
   duration_ms: number;
 };
 
@@ -49,8 +54,11 @@ export async function roboHireParseResume(
 
   const startedAt = Date.now();
   const form = new FormData();
-  // RoboHire expects field name "file"
-  const blob = new Blob([new Uint8Array(fileBuffer)]);
+  // RoboHire docs §2: field name "file", mime application/pdf.
+  // Don't set Content-Type manually — FormData adds the multipart boundary.
+  const blob = new Blob([new Uint8Array(fileBuffer)], {
+    type: "application/pdf",
+  });
   form.append("file", blob, filename);
 
   const res = await fetch(`${BASE}/api/v1/parse-resume`, {
@@ -60,13 +68,18 @@ export async function roboHireParseResume(
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
-  const requestId = res.headers.get("x-request-id") ?? "";
+  const headerRequestId = res.headers.get("x-request-id") ?? "";
 
   if (!res.ok) {
     let msg = res.statusText;
+    let bodyRequestId = "";
     try {
-      const body = await res.json();
-      msg = (body as any)?.error ?? (body as any)?.message ?? JSON.stringify(body);
+      const body = (await res.json()) as Record<string, unknown>;
+      msg =
+        (body as any)?.error ??
+        (body as any)?.message ??
+        JSON.stringify(body);
+      bodyRequestId = (body as any)?.requestId ?? "";
     } catch {
       try {
         msg = await res.text();
@@ -74,17 +87,36 @@ export async function roboHireParseResume(
         /* keep statusText */
       }
     }
-    throw new RoboHireError(res.status, msg, requestId);
+    throw new RoboHireError(
+      res.status,
+      msg,
+      bodyRequestId || headerRequestId,
+    );
   }
 
-  const cached = res.headers.get("x-cache-hit") === "true";
-  const json = (await res.json()) as RoboHireParseResponse;
-  const parsed = mapRoboHireToParsedResume(json);
+  const json = (await res.json()) as {
+    success?: boolean;
+    data?: Record<string, unknown>;
+    cached?: boolean;
+    documentId?: string;
+    savedAs?: string;
+    requestId?: string;
+  };
+
+  if (!json.data) {
+    throw new RoboHireError(
+      500,
+      "RoboHire 200 response missing `data`",
+      json.requestId ?? headerRequestId,
+    );
+  }
 
   return {
-    parsed,
-    requestId,
-    cached,
+    data: json.data,
+    requestId: json.requestId ?? headerRequestId,
+    cached: Boolean(json.cached),
+    documentId: json.documentId,
+    savedAs: json.savedAs,
     duration_ms: Date.now() - startedAt,
   };
 }
@@ -92,19 +124,21 @@ export async function roboHireParseResume(
 // ─── match-resume ──────────────────────────────────────────────────
 
 export type RoboHireMatchInput = {
-  resumeText: string; // flattened from parsed-resume payload
-  jdText: string;
+  /** Plain text resume — typically `parsed.data.rawText` or a flattened summary. */
+  resume: string;
+  /** Plain text job description. */
+  jd: string;
+  /** Optional free-form candidate preferences (location/salary/etc). */
+  candidatePreferences?: string;
+  /** Optional free-form job metadata (company stage, must-haves). */
+  jobMetadata?: string;
 };
 
 export type RoboHireMatchResult = {
-  score: number;
-  recommendation: "STRONG_MATCH" | "GOOD_MATCH" | "PARTIAL_MATCH" | "WEAK_MATCH";
-  summary: string;
-  technicalSkills: { score: number; matchedSkills: string[]; missingSkills: string[] };
-  experienceLevel: { score: number; required: string; candidate: string; assessment: string };
-  mustHave: { extracted: { skills: string[]; experience: string[] }; matched: string[] };
-  niceToHave: { extracted: { skills: string[]; certifications: string[] }; matched: string[] };
+  /** RoboHire response `data` field — passed through verbatim. */
+  data: Record<string, unknown>;
   requestId: string;
+  savedAs?: string;
   duration_ms: number;
 };
 
@@ -114,225 +148,117 @@ export async function roboHireMatchResume(
   if (!KEY) throw new RoboHireError(0, "ROBOHIRE_API_KEY not set");
 
   const startedAt = Date.now();
+  const body: Record<string, string> = {
+    resume: input.resume,
+    jd: input.jd,
+  };
+  if (input.candidatePreferences) body.candidatePreferences = input.candidatePreferences;
+  if (input.jobMetadata) body.jobMetadata = input.jobMetadata;
+
   const res = await fetch(`${BASE}/api/v1/match-resume`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ resume: input.resumeText, jd: input.jdText }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
-  const requestId = res.headers.get("x-request-id") ?? "";
+  const headerRequestId = res.headers.get("x-request-id") ?? "";
   if (!res.ok) {
     let msg = res.statusText;
+    let bodyRequestId = "";
     try {
-      msg = JSON.stringify(await res.json());
+      const errBody = (await res.json()) as Record<string, unknown>;
+      msg =
+        (errBody as any)?.error ??
+        (errBody as any)?.message ??
+        JSON.stringify(errBody);
+      bodyRequestId = (errBody as any)?.requestId ?? "";
     } catch {
-      /* ignore */
+      try {
+        msg = await res.text();
+      } catch {
+        /* keep statusText */
+      }
     }
-    throw new RoboHireError(res.status, msg, requestId);
+    throw new RoboHireError(
+      res.status,
+      msg,
+      bodyRequestId || headerRequestId,
+    );
   }
-  const json = (await res.json()) as any;
+
+  const json = (await res.json()) as {
+    success?: boolean;
+    data?: Record<string, unknown>;
+    requestId?: string;
+    savedAs?: string;
+  };
+
+  if (!json.data) {
+    throw new RoboHireError(
+      500,
+      "RoboHire 200 response missing `data`",
+      json.requestId ?? headerRequestId,
+    );
+  }
+
   return {
-    score: typeof json.matchScore === "number" ? json.matchScore : 0,
-    recommendation: json.recommendation ?? "WEAK_MATCH",
-    summary: json.summary ?? "",
-    technicalSkills: json.technicalSkills ?? { score: 0, matchedSkills: [], missingSkills: [] },
-    experienceLevel: json.experienceLevel ?? {
-      score: 0,
-      required: "",
-      candidate: "",
-      assessment: "",
-    },
-    mustHave: json.mustHave ?? {
-      extracted: { skills: [], experience: [] },
-      matched: [],
-    },
-    niceToHave: json.niceToHave ?? {
-      extracted: { skills: [], certifications: [] },
-      matched: [],
-    },
-    requestId,
+    data: json.data,
+    requestId: json.requestId ?? headerRequestId,
+    savedAs: json.savedAs,
     duration_ms: Date.now() - startedAt,
   };
 }
 
-// ─── Response shape (RoboHire /parse-resume) ───────────────────────
-// Based on resume-agent-engineering-spec §5.1; tolerant to missing fields.
+// ─── Helpers ─────────────────────────────────────────────────────
 
-type RoboHireParseResponse = {
-  data?: {
-    name?: string | null;
-    phone?: string | null;
-    email?: string | null;
-    location?: string | null;
-    summary?: string | null;
-    skills?: string[];
-    experience?: Array<{
-      title?: string;
-      company?: string;
-      startDate?: string;
-      endDate?: string;
-      description?: string;
-    }>;
-    education?: Array<{
-      degree?: string;
-      field?: string;
-      institution?: string;
-      graduationYear?: string | number;
-    }>;
-  };
-};
-
-function mapRoboHireToParsedResume(rh: RoboHireParseResponse): ParsedResume {
-  const d = rh.data ?? {};
-  const experience = Array.isArray(d.experience) ? d.experience : [];
-  const education = Array.isArray(d.education) ? d.education : [];
-  const skills = Array.isArray(d.skills) ? d.skills : [];
-
-  // Pick "current" job: experience entry whose endDate is undefined / "present"
-  const cur = experience.find((e) => {
-    const v = (e.endDate ?? "").toLowerCase();
-    return v === "" || v === "present" || v === "current" || v === "至今";
-  }) ?? experience[0];
-
-  // Highest degree by rank
-  const rank: Record<string, number> = {
-    大专: 1,
-    本科: 2,
-    bachelor: 2,
-    "本科 (Bachelor)": 2,
-    硕士: 3,
-    master: 3,
-    mba: 3,
-    博士: 4,
-    phd: 4,
-    doctor: 4,
-  };
-  let bestDegree: string | null = null;
-  let bestRank = 0;
-  for (const e of education) {
-    const r = rank[(e.degree ?? "").toLowerCase()] ?? rank[e.degree ?? ""] ?? 0;
-    if (r > bestRank) {
-      bestRank = r;
-      bestDegree = e.degree ?? null;
-    }
+/**
+ * Pull a plain-text resume out of RoboHire's parse response so we can
+ * feed it to /match-resume. Prefers the `rawText` field RoboHire
+ * returns; falls back to a synthesized summary from structured fields.
+ */
+export function roboHireDataToResumeText(data: Record<string, unknown>): string {
+  const rawText = (data as any)?.rawText;
+  if (typeof rawText === "string" && rawText.trim().length > 200) {
+    return rawText;
   }
-
-  // Work years estimate from experience date ranges
-  let workYears: number | null = null;
-  if (experience.length > 0) {
-    let total = 0;
-    for (const e of experience) {
-      if (!e.startDate) continue;
-      const start = parseDateLoose(e.startDate);
-      const end = parseDateLoose(e.endDate ?? "") ?? Date.now();
-      if (start && end) total += Math.max(0, (end - start) / (1000 * 60 * 60 * 24 * 365));
-    }
-    workYears = total > 0 ? Math.round(total) : null;
-  }
-
-  return {
-    candidate: {
-      name: d.name ?? null,
-      mobile: cleanPhone(d.phone),
-      email: d.email ?? null,
-      gender: null,
-      birth_date: null,
-      current_location: d.location ?? null,
-      highest_acquired_degree: bestDegree,
-      work_years: workYears,
-      current_company: cur?.company ?? null,
-      current_title: cur?.title ?? null,
-      skills,
-    },
-    candidate_expectation: {
-      expected_salary_monthly_min: null,
-      expected_salary_monthly_max: null,
-      expected_cities: [],
-      expected_industries: [],
-      expected_roles: [],
-      expected_work_mode: null,
-    },
-    resume: {
-      summary: d.summary ?? null,
-      skills_extracted: skills,
-      work_history: experience.map((e) => ({
-        title: e.title,
-        company: e.company,
-        startDate: e.startDate,
-        endDate: e.endDate,
-        description: e.description,
-      })),
-      education_history: education.map((e) => ({
-        degree: e.degree,
-        field: e.field,
-        institution: e.institution,
-        graduationYear: e.graduationYear ? String(e.graduationYear) : undefined,
-      })),
-      project_history: [],
-    },
-    runtime: {
-      current_title: cur?.title ?? null,
-      current_company: cur?.company ?? null,
-    },
-  };
-}
-
-function cleanPhone(p: string | null | undefined): string | null {
-  if (!p) return null;
-  return p.replace(/[\s\-]/g, "").trim() || null;
-}
-
-function parseDateLoose(s: string): number | null {
-  if (!s) return null;
-  // YYYY-MM, YYYY-MM-DD, YYYY/MM, YYYY
-  const m = s.match(/^(\d{4})[-/]?(\d{1,2})?[-/]?(\d{1,2})?/);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2] ?? 1);
-  const d = Number(m[3] ?? 1);
-  if (!y || y < 1970 || y > 2100) return null;
-  return new Date(y, mo - 1, d).getTime();
-}
-
-// ─── Flatten ParsedResume → plain text for /match-resume ─────────
-
-export function flattenParsedResumeForMatch(parsed: ParsedResume): string {
+  // Fallback: stringify the structured payload — RoboHire docs §3 say this
+  // is acceptable for /match-resume and that plain text scores marginally
+  // better than JSON, so prefer rawText when long enough.
   const lines: string[] = [];
-  if (parsed.candidate.name) lines.push(`姓名: ${parsed.candidate.name}`);
-  if (parsed.candidate.email) lines.push(`邮箱: ${parsed.candidate.email}`);
-  if (parsed.candidate.mobile) lines.push(`电话: ${parsed.candidate.mobile}`);
-  if (parsed.candidate.current_location) lines.push(`城市: ${parsed.candidate.current_location}`);
-  if (parsed.candidate.work_years != null) lines.push(`工作年限: ${parsed.candidate.work_years}年`);
-  if (parsed.candidate.highest_acquired_degree) lines.push(`学历: ${parsed.candidate.highest_acquired_degree}`);
-  if (parsed.candidate.current_title || parsed.candidate.current_company) {
-    lines.push(
-      `当前: ${parsed.candidate.current_title ?? ""} @ ${parsed.candidate.current_company ?? ""}`,
-    );
-  }
-  if (parsed.candidate.skills?.length) {
-    lines.push(`技能: ${parsed.candidate.skills.join(", ")}`);
-  }
-  if (parsed.resume.summary) {
-    lines.push(`\n个人简介:\n${parsed.resume.summary}`);
-  }
-  if (parsed.resume.work_history?.length) {
-    lines.push("\n工作经历:");
-    for (const w of parsed.resume.work_history) {
-      lines.push(
-        `  ${w.startDate ?? ""} - ${w.endDate ?? "至今"}  ${w.title ?? ""} @ ${w.company ?? ""}`,
-      );
-      if (w.description) lines.push(`    ${w.description}`);
+  const d = data as any;
+  if (d.name) lines.push(d.name);
+  if (d.summary) lines.push(d.summary);
+  if (d.email) lines.push(`Email: ${d.email}`);
+  if (d.phone) lines.push(`Phone: ${d.phone}`);
+  if (d.address) lines.push(`Address: ${d.address}`);
+  if (Array.isArray(d.experience)) {
+    lines.push("\nExperience:");
+    for (const e of d.experience) {
+      lines.push(`- ${e?.startDate ?? ""}–${e?.endDate ?? ""} ${e?.role ?? e?.title ?? ""} @ ${e?.company ?? ""}`);
+      if (e?.description) lines.push(`  ${e.description}`);
     }
   }
-  if (parsed.resume.education_history?.length) {
-    lines.push("\n教育经历:");
-    for (const e of parsed.resume.education_history) {
-      lines.push(`  ${e.institution ?? ""}  ${e.degree ?? ""}  ${e.field ?? ""}  ${e.graduationYear ?? ""}`);
+  if (Array.isArray(d.education)) {
+    lines.push("\nEducation:");
+    for (const e of d.education) {
+      lines.push(`- ${e?.institution ?? ""}  ${e?.degree ?? ""} ${e?.field ?? ""} (${e?.startDate ?? ""}–${e?.endDate ?? ""})`);
     }
+  }
+  if (d.skills && typeof d.skills === "object") {
+    const s = d.skills as Record<string, string[]>;
+    const allSkills = [
+      ...(Array.isArray(s.technical) ? s.technical : []),
+      ...(Array.isArray(s.tools) ? s.tools : []),
+      ...(Array.isArray(s.languages) ? s.languages : []),
+      ...(Array.isArray(s.frameworks) ? s.frameworks : []),
+    ];
+    if (allSkills.length) lines.push(`\nSkills: ${allSkills.join(", ")}`);
+  } else if (Array.isArray(d.skills)) {
+    lines.push(`\nSkills: ${d.skills.join(", ")}`);
   }
   return lines.join("\n");
 }

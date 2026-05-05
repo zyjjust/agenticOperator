@@ -67,3 +67,10 @@ data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 .inngest/
+
+# Claude Code worktree dirs (created by Claude Code, project-local copies)
+.claude/
+
+# Runtime state + e2e test artifacts (regenerated each run)
+data/agentic-state.json
+data/e2e-out/

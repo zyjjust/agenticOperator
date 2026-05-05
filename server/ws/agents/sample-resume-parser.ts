@@ -1,47 +1,62 @@
-// processResume — workflow node 9-1, real implementation.
+// processResume — workflow node 9-1.
 //
-// Spec source: docs/resume-agent-engineering-spec.md §3.2 + §4
-// Input event:  RESUME_DOWNLOADED { resume_file_paths, job_requisition_id, channel }
-// Output event: RESUME_PROCESSED  with full 4-object payload
+// Wire format: RAAS partner spec (docs/raas-alignment-payloads.md +
+// 事件对接备忘 §2-§4).
 //
-// Steps (per §4.1):
-//   1. fetch-resume-bytes  — read from data/sample-resumes/<name> (POC)
-//                            or accept inline resume_text in event payload
-//   2. extract-text        — pdf-parse for .pdf, raw for .txt
-//   3. extract-structured  — OpenAI gpt-4o-mini if key set, else stub
-//   4. sanity-check        — hasStructuredResumePayload (spec §4.2)
-//   5. emit-resume-processed
+// Inbound RESUME_DOWNLOADED:
+//   { name: "RESUME_DOWNLOADED",
+//     data: { entity_type, entity_id, event_id, payload: { ...snake_case... }, trace } }
 //
-// All state writes go to AgentActivity (so /agent-demo UI can render them).
+// Outbound RESUME_PROCESSED — same envelope, payload echoes inbound
+// transport fields verbatim and adds **payload.parsed.data with the
+// RoboHire `/parse-resume` response `data` field, passed through
+// VERBATIM** (spec §4: 不需要任何字段重命名 / 拍扁).
+//
+// Pipeline (RoboHire-first; LLM fallback if RoboHire is down):
+//   MinIO getObject(bucket, object_key) → Buffer
+//     ├─ RoboHire /parse-resume   ← preferred
+//     └─ unpdf → new-api LLM      ← fallback only when RoboHire fails
+//   → emit RESUME_PROCESSED with raw RoboHire-shape data
 
-import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
-import {
-  extractResume,
-  extractResumeFromBuffer,
-  type ParsedResume,
-} from "../../llm/resume-extractor";
+import { isAgenticEnabled } from "../../agentic-state";
 import { getMinIOClient, isMinIOConfigured } from "../../llm/minio-client";
+import {
+  isRoboHireConfigured,
+  roboHireParseResume,
+  RoboHireError,
+} from "../../llm/robohire";
+import {
+  llmExtractRoboHireShape,
+  pdfBufferToText,
+} from "../../llm/robohire-shape";
+import { forwardToRaas } from "../../inngest/raas-forward";
 
 const AGENT_ID = "9-1";
 const AGENT_NAME = "processResume";
-const MAPPING_VERSION = "robohire-or-llm-2026-04-28";
+const PARSER_VERSION = "ao+robohire@2026-04-28";
 
-// Inbound — supports BOTH the canonical RAAS schema AND the lighter
-// AO-test variant.
-//
-// Canonical (RAAS handoff §2):
-//   { bucket, objectKey, filename, hrFolder, employeeId, etag, size,
-//     sourceEventName, receivedAt }
-//
-// AO-test variant (used by /api/test/trigger-resume-uploaded):
-//   { resume_file_paths: [], job_requisition_id, channel, resume_text? }
-type ResumeDownloadedData = {
-  // Canonical fields
+// Inbound envelope (RAAS partner contract §3)
+type ResumeDownloadedEnvelope = {
+  entity_type?: string;
+  entity_id?: string | null;
+  event_id?: string;
+  payload: ResumeDownloadedPayload;
+  trace?: {
+    trace_id?: string | null;
+    request_id?: string | null;
+    workflow_id?: string | null;
+    parent_trace_id?: string | null;
+  };
+
+  // Tolerated for back-compat with the older AO-test trigger that sent
+  // canonical fields at the data-root.
   bucket?: string;
   objectKey?: string;
+  object_key?: string;
   filename?: string;
   hrFolder?: string | null;
   employeeId?: string | null;
@@ -49,13 +64,73 @@ type ResumeDownloadedData = {
   size?: number | null;
   sourceEventName?: string | null;
   receivedAt?: string;
-
-  // AO-test fields
+  resume_text?: string;
   resume_file_paths?: string[];
-  job_requisition_id?: string;
-  channel?: string;
+};
+
+type ResumeDownloadedPayload = {
+  upload_id?: string;
+  bucket: string;
+  object_key: string;
+  filename?: string | null;
+  etag?: string | null;
+  size?: number | null;
+  hr_folder?: string | null;
+  employee_id?: string | null;
+  source_event_name?: string | null;
+  received_at?: string;
+  // JD link — partner spec doesn't include yet, but the canonical
+  // recruitment events schema has it. We forward it through to match.
+  jd_id?: string | null;
+  job_requisition_id?: string | null;
+  // Bookkeeping IDs (forwarded to RESUME_PROCESSED so matchResume can
+  // pick them up without hitting AO's local DB cache).
+  // claimer_employee_id is the recruiter who claimed the requisition;
+  // matchResume needs it to call RAAS Internal API for the JD payload.
+  claimer_employee_id?: string | null;
+  hsm_employee_id?: string | null;
+  client_id?: string | null;
+  source_label?: string | null;
+  summary_prefix?: string | null;
+  operator_id?: string | null;
+  operator_name?: string | null;
+  operator_role?: string | null;
+  ip_address?: string | null;
+  candidate_name?: string | null;
+  candidate_id?: string | null;
+  resume_file_path?: string | null;
+
+  // Test fixture path — bypasses MinIO + RoboHire if present.
   resume_text?: string;
 };
+
+// Spec §3 last bullet: 16 transport fields to echo verbatim.
+// Plus jd_id + job_requisition_id + claimer_employee_id (when present),
+// so matchResume can look up the real JD via RAAS Internal API without
+// going through AO's local DB cache.
+const TRANSPORT_FIELDS = [
+  "upload_id",
+  "bucket",
+  "object_key",
+  "filename",
+  "etag",
+  "size",
+  "hr_folder",
+  "employee_id",
+  "source_event_name",
+  "received_at",
+  "source_label",
+  "summary_prefix",
+  "operator_id",
+  "operator_name",
+  "operator_role",
+  "ip_address",
+  "jd_id",
+  "job_requisition_id",
+  "claimer_employee_id",
+  "hsm_employee_id",
+  "client_id",
+] as const;
 
 export const sampleResumeParserAgent = inngest.createFunction(
   {
@@ -65,83 +140,170 @@ export const sampleResumeParserAgent = inngest.createFunction(
     triggers: [{ event: "RESUME_DOWNLOADED" }],
   },
   async ({ event, step, logger }) => {
-    const data = event.data as ResumeDownloadedData;
-    const sourceLabel =
-      data.bucket && data.objectKey
-        ? `${data.bucket}/${data.objectKey}`
-        : data.resume_file_paths?.[0] ??
-          (data.resume_text ? "inline text" : "—");
-    const jdId = data.job_requisition_id ?? null;
+    const envelope = normalizeInbound(event.data as ResumeDownloadedEnvelope);
+    const payload = envelope.payload;
+    const sourceLabel = `${payload.bucket}/${payload.object_key}`;
 
-    // ── Step 0 — Receipt log (leader's required line, verbatim) ──
+    // ── Agentic on/off toggle (server/agentic-state.ts) ──
+    // When OFF, log a single AgentActivity row + return without
+    // touching MinIO / RoboHire / emitting events. UI's /workflow
+    // toggle controls this in real time.
+    const enabled = await step.run("check-agentic-toggle", async () => {
+      return await isAgenticEnabled();
+    });
+    if (!enabled) {
+      logger.info(
+        `[${AGENT_NAME}] agentic mode is OFF — skipping ${sourceLabel}`,
+      );
+      await step.run("log-skipped", async () => {
+        await prisma.agentActivity.create({
+          data: {
+            nodeId: AGENT_ID,
+            agentName: AGENT_NAME,
+            type: "event_received",
+            narrative: `Skipped (agentic OFF) · ${sourceLabel}`,
+            metadata: JSON.stringify({
+              event_name: "RESUME_DOWNLOADED",
+              event_id: envelope.event_id,
+              upload_id: payload.upload_id,
+              skipped: true,
+              reason: "agentic mode disabled",
+            }),
+          },
+        });
+      });
+      return { skipped: true, reason: "agentic mode disabled" };
+    }
+
     logger.info(
-      `Received the resume — source=${sourceLabel} jd=${jdId ?? "—"} channel=${data.channel ?? "—"}`,
+      `[${AGENT_NAME}] received RESUME_DOWNLOADED — ${sourceLabel} upload_id=${payload.upload_id ?? "—"}`,
     );
+
     await step.run("log-received", async () => {
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "event_received",
-          narrative: "Received the resume",
-          metadata: JSON.stringify({ trigger: "RESUME_DOWNLOADED", ...data }),
+          narrative: `Received RESUME_DOWNLOADED · ${sourceLabel}`,
+          metadata: JSON.stringify({
+            event_name: "RESUME_DOWNLOADED",
+            event_id: envelope.event_id,
+            payload,
+          }),
         },
       });
     });
 
-    // ── Step 1 — Fetch + parse (single fat step) ─────────────────
-    // Combined: Buffer can't cross step.run JSON boundary, so fetch
-    // and structured-extract happen in one step, returning only the
-    // JSON-serializable parsed result.
-    const extracted = await step.run("fetch-and-parse-resume", async () => {
-      // a) Inline text (AO test path)
-      if (data.resume_text) {
-        const r = await extractResume(data.resume_text);
+    // Single fat step — Buffer can't cross step.run JSON boundary.
+    const extracted: FetchAndParseResult = await step.run("fetch-and-parse", async (): Promise<FetchAndParseResult> => {
+      const t0 = Date.now();
+
+      // ── Inline-text fixture path (test only) ─────────────────────
+      if (payload.resume_text) {
+        const llm = await llmExtractRoboHireShape(payload.resume_text);
         return {
-          ...r,
-          sourceDescription: "inline resume_text",
-          inputBytes: data.resume_text.length,
+          parsedData: llm.parsed as unknown as Record<string, unknown>,
+          mode: "llm-fixture" as const,
+          modelUsed: llm.modelUsed,
+          requestId: undefined as string | undefined,
+          cached: false,
+          documentId: undefined as string | undefined,
+          savedAs: undefined as string | undefined,
+          durationMs: Date.now() - t0,
+          parseDurationMs: llm.duration_ms,
+          inputBytes: payload.resume_text.length,
+          textChars: payload.resume_text.length,
+          sourceDescription: `inline resume_text (${payload.resume_text.length} chars)`,
+          fallbackReason: undefined as string | undefined,
         };
       }
 
-      // b) Canonical RAAS path: read from MinIO
-      if (data.bucket && data.objectKey) {
-        if (!isMinIOConfigured()) {
-          throw new Error(
-            `RESUME_DOWNLOADED indicates MinIO source ${data.bucket}/${data.objectKey} but MINIO_* env not configured`,
+      // ── MinIO fetch (real path) ──────────────────────────────────
+      if (!isMinIOConfigured()) {
+        throw new Error(
+          `RESUME_DOWNLOADED indicates MinIO source ${payload.bucket}/${payload.object_key} but MINIO_* env not configured`,
+        );
+      }
+      const minio = getMinIOClient();
+      const stream = await minio.getObject(payload.bucket, payload.object_key);
+      const chunks: Buffer[] = [];
+      for await (const c of stream as AsyncIterable<Buffer | Uint8Array>) {
+        chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+      }
+      const buf = Buffer.concat(chunks);
+      const filename = payload.filename ?? path.basename(payload.object_key);
+      const sourceDescription = `MinIO ${payload.bucket}/${payload.object_key} (${buf.length} bytes)`;
+
+      // ── RoboHire (preferred) ────────────────────────────────────
+      if (isRoboHireConfigured()) {
+        try {
+          const r = await roboHireParseResume(buf, filename);
+          return {
+            parsedData: r.data,
+            mode: "robohire" as const,
+            modelUsed: "robohire/parse-resume",
+            requestId: r.requestId,
+            cached: r.cached,
+            documentId: r.documentId,
+            savedAs: r.savedAs,
+            durationMs: Date.now() - t0,
+            parseDurationMs: r.duration_ms,
+            inputBytes: buf.length,
+            textChars: 0,
+            sourceDescription,
+            fallbackReason: undefined as string | undefined,
+          };
+        } catch (e) {
+          const reason =
+            e instanceof RoboHireError
+              ? `${e.status}: ${e.message}`
+              : (e as Error).message;
+          console.warn(
+            `[${AGENT_NAME}] RoboHire failed (${reason}); falling back to LLM extraction`,
           );
+          // fall through to LLM fallback
+          const fallbackReason = `robohire: ${reason}`;
+          const isPdf = filename.toLowerCase().endsWith(".pdf");
+          const text = isPdf ? await pdfBufferToText(buf) : buf.toString("utf-8");
+          const llm = await llmExtractRoboHireShape(text);
+          return {
+            parsedData: llm.parsed as unknown as Record<string, unknown>,
+            mode: "llm-fallback",
+            modelUsed: llm.modelUsed,
+            requestId: undefined,
+            cached: false,
+            documentId: undefined,
+            savedAs: undefined,
+            durationMs: Date.now() - t0,
+            parseDurationMs: llm.duration_ms,
+            inputBytes: buf.length,
+            textChars: text.length,
+            sourceDescription,
+            fallbackReason,
+          };
         }
-        const minio = getMinIOClient();
-        const stream = await minio.getObject(data.bucket, data.objectKey);
-        const buf = await streamToBuffer(stream);
-        const filename = data.filename ?? path.basename(data.objectKey);
-        const r = await extractResumeFromBuffer(buf, filename);
-        return {
-          ...r,
-          sourceDescription: `MinIO ${data.bucket}/${data.objectKey} (${buf.length} bytes)`,
-          inputBytes: buf.length,
-        };
       }
 
-      // c) AO-test path: local sample file
-      const filePath = data.resume_file_paths?.[0];
-      if (filePath) {
-        const abs = resolveSamplePath(filePath);
-        const buf = await fs.readFile(abs);
-        const filename = path.basename(filePath);
-        const r = filePath.toLowerCase().endsWith(".pdf")
-          ? await extractResumeFromBuffer(buf, filename)
-          : await extractResume(buf.toString("utf-8"));
-        return {
-          ...r,
-          sourceDescription: `local ${filePath} (${buf.length} bytes)`,
-          inputBytes: buf.length,
-        };
-      }
-
-      throw new Error(
-        "RESUME_DOWNLOADED must include {bucket,objectKey} OR resume_text OR resume_file_paths[0]",
-      );
+      // ── No RoboHire configured — LLM only ────────────────────────
+      const isPdf = filename.toLowerCase().endsWith(".pdf");
+      const text = isPdf ? await pdfBufferToText(buf) : buf.toString("utf-8");
+      const llm = await llmExtractRoboHireShape(text);
+      return {
+        parsedData: llm.parsed as unknown as Record<string, unknown>,
+        mode: "llm-only",
+        modelUsed: llm.modelUsed,
+        requestId: undefined,
+        cached: false,
+        documentId: undefined,
+        savedAs: undefined,
+        durationMs: Date.now() - t0,
+        parseDurationMs: llm.duration_ms,
+        inputBytes: buf.length,
+        textChars: text.length,
+        sourceDescription,
+        fallbackReason: undefined,
+      };
     });
 
     await step.run("log-fetched", async () => {
@@ -150,168 +312,245 @@ export const sampleResumeParserAgent = inngest.createFunction(
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "tool",
-          narrative: `Fetched ${extracted.inputBytes} bytes from ${extracted.sourceDescription}`,
+          narrative: `Fetched ${extracted.inputBytes} bytes · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
           metadata: JSON.stringify({
-            chars: extracted.inputBytes,
+            mode: extracted.mode,
             source: extracted.sourceDescription,
+            input_bytes: extracted.inputBytes,
+            text_chars: extracted.textChars,
+            request_id: extracted.requestId,
+            cached: extracted.cached,
+            fallback_reason: extracted.fallbackReason,
           }),
         },
       });
     });
 
     await step.run("log-parsed", async () => {
-      const skillCount = extracted.parsed.candidate.skills.length;
-      const jobCount = extracted.parsed.resume.work_history.length;
+      const d = extracted.parsedData as any;
+      const candName = d?.name ?? "—";
+      const expCount = Array.isArray(d?.experience) ? d.experience.length : 0;
+      const eduCount = Array.isArray(d?.education) ? d.education.length : 0;
+      const skillCount = countSkills(d?.skills);
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "agent_complete",
-          narrative: `Parse complete in ${extracted.duration_ms}ms · ${skillCount} skills · ${jobCount} jobs · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
+          narrative: `Parse complete in ${extracted.parseDurationMs}ms · ${skillCount} skills · ${expCount} jobs · ${eduCount} edu · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
           metadata: JSON.stringify({
             mode: extracted.mode,
-            modelUsed: extracted.modelUsed,
-            duration_ms: extracted.duration_ms,
-            requestId: extracted.requestId,
+            model_used: extracted.modelUsed,
+            duration_ms: extracted.durationMs,
+            parse_duration_ms: extracted.parseDurationMs,
+            request_id: extracted.requestId,
+            document_id: extracted.documentId,
+            saved_as: extracted.savedAs,
             cached: extracted.cached,
-            fallback_reason: extracted.fallback_reason,
-            parsed: extracted.parsed,
+            candidate_name: candName,
+            parsed: extracted.parsedData,
           }),
         },
       });
     });
 
-    // ── Step 3 — Sanity check (spec §4.2) ──
-    if (!hasStructuredResumePayload(extracted.parsed)) {
+    if (!hasMeaningfulData(extracted.parsedData)) {
       await step.run("log-sanity-fail", async () => {
         await prisma.agentActivity.create({
           data: {
             nodeId: AGENT_ID,
             agentName: AGENT_NAME,
             type: "agent_error",
-            narrative: "Sanity check failed — no structured fields extracted; not emitting RESUME_PROCESSED",
-            metadata: JSON.stringify({ parsed: extracted.parsed }),
+            narrative: "Sanity check failed — parser returned empty data, not emitting RESUME_PROCESSED",
+            metadata: JSON.stringify({ parsed: extracted.parsedData }),
           },
         });
       });
-      throw new Error("hasStructuredResumePayload returned false");
+      throw new Error("Parser returned no meaningful fields");
     }
 
-    // ── Step 4 — Emit RESUME_PROCESSED with full §3.2 schema ──
-    const payload = buildResumeProcessedPayload(data, extracted);
+    // ── Emit RESUME_PROCESSED (RAAS-facing) ──
+    // Spec §1: "agent → raas（RESUME_PROCESSED）". RAAS subscribes to
+    // this event for Candidate / Resume DB inserts. AO must NOT also
+    // subscribe to it — see match-resume.ts header.
+    const outboundPayload = buildOutboundPayload(payload, extracted);
+    const outboundEnvelope = {
+      entity_type: "Candidate",
+      entity_id: envelope.entity_id ?? null,
+      event_id: randomUUID(),
+      payload: outboundPayload,
+      trace: envelope.trace ?? {
+        trace_id: null,
+        request_id: null,
+        workflow_id: null,
+        parent_trace_id: null,
+      },
+    };
 
     await step.sendEvent("emit-resume-processed", {
       name: "RESUME_PROCESSED",
-      data: payload,
+      data: outboundEnvelope,
     });
 
-    await step.run("log-emitted", async () => {
+    // matchResume subscribes directly to RESUME_PROCESSED on our local
+    // Inngest. Partner's resume-processed-ingest subscribes on theirs.
+    // Forward the same event to partner Inngest so both sides fire.
+    await step.run("forward-to-raas-resume-processed", async () => {
+      return forwardToRaas("RESUME_PROCESSED", outboundEnvelope);
+    });
+
+    await step.run("log-emitted-resume-processed", async () => {
+      const d = extracted.parsedData as any;
       await prisma.agentActivity.create({
         data: {
           nodeId: AGENT_ID,
           agentName: AGENT_NAME,
           type: "event_emitted",
-          narrative: `Published RESUME_PROCESSED · candidate=${extracted.parsed.candidate.name ?? "—"} · skills=${extracted.parsed.candidate.skills.length}`,
+          narrative: `Published RESUME_PROCESSED · candidate=${d?.name ?? "—"} · upload_id=${payload.upload_id ?? "—"}`,
           metadata: JSON.stringify({
             event_name: "RESUME_PROCESSED",
-            parserVersion: payload.parserVersion,
-            candidate_name: extracted.parsed.candidate.name,
-            duration_ms: extracted.duration_ms,
+            event_id: outboundEnvelope.event_id,
+            upload_id: payload.upload_id,
+            candidate_name: d?.name,
+            duration_ms: extracted.durationMs,
+            parser_version: PARSER_VERSION,
+            mode: extracted.mode,
+            request_id: extracted.requestId,
           }),
         },
       });
     });
 
     logger.info(
-      `[${AGENT_NAME}] published RESUME_PROCESSED — candidate=${extracted.parsed.candidate.name} mode=${extracted.mode}`,
+      `[${AGENT_NAME}] published RESUME_PROCESSED — candidate=${(extracted.parsedData as any)?.name ?? "—"} mode=${extracted.mode}`,
     );
 
-    return payload;
+    return outboundEnvelope;
   },
 );
 
-// Stream → Buffer (per resume-agent-engineering-spec §4.2 / §7.1)
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+function normalizeInbound(d: ResumeDownloadedEnvelope): {
+  entity_type?: string;
+  entity_id?: string | null;
+  event_id?: string;
+  payload: ResumeDownloadedPayload;
+  trace?: ResumeDownloadedEnvelope["trace"];
+} {
+  if (d.payload && (d.payload.bucket || d.payload.object_key)) {
+    const p = d.payload as Record<string, unknown>;
+    if (!p.object_key && (p as any).objectKey) {
+      (p as any).object_key = (p as any).objectKey;
+    }
+    return {
+      entity_type: d.entity_type,
+      entity_id: d.entity_id ?? null,
+      event_id: d.event_id,
+      payload: d.payload,
+      trace: d.trace,
+    };
   }
-  return Buffer.concat(chunks);
-}
 
-function resolveSamplePath(p: string): string {
-  // Accepts:
-  //   "wang-feng-java.txt"                                    → data/sample-resumes/wang-feng-java.txt
-  //   "data/sample-resumes/wang-feng-java.txt"                → as-is
-  //   "/storage/resumes/wang-feng_java_2024.pdf" (legacy)    → reroute to known sample
-  if (p.startsWith("/")) {
-    // legacy fixture path — swap to the matching sample
-    const slug = path.basename(p).toLowerCase();
-    if (slug.includes("java") || slug.includes("wang")) return absoluteSample("wang-feng-java.txt");
-    if (slug.includes("frontend") || slug.includes("li-xiaohong")) return absoluteSample("li-xiaohong-frontend.txt");
-    if (slug.includes("data") || slug.includes("zhang-wei")) return absoluteSample("zhang-wei-data.txt");
-    if (slug.includes("ue5") || slug.includes("liu-yang")) return absoluteSample("wang-feng-java.txt"); // no UE5 sample yet
-    return absoluteSample(path.basename(p, path.extname(p)) + ".txt");
+  // Legacy flat shape (kept for AO-internal test triggers).
+  const objectKey = d.objectKey ?? d.object_key ?? d.resume_file_paths?.[0] ?? "";
+  if (!d.bucket && !objectKey && !d.resume_text) {
+    throw new Error(
+      "RESUME_DOWNLOADED missing data.payload.{bucket,object_key} (RAAS envelope) and no fallback fields",
+    );
   }
-  if (p.startsWith("data/")) return path.resolve(p);
-  return absoluteSample(p);
+  const filename = d.filename ?? (objectKey ? path.basename(objectKey) : null);
+  return {
+    entity_type: "Candidate",
+    entity_id: null,
+    event_id: undefined,
+    payload: {
+      upload_id: undefined,
+      bucket: d.bucket ?? "recruit-resume-raw",
+      object_key: objectKey,
+      filename,
+      etag: d.etag ?? null,
+      size: d.size ?? null,
+      hr_folder: d.hrFolder ?? null,
+      employee_id: d.employeeId ?? null,
+      source_event_name: d.sourceEventName ?? null,
+      received_at: d.receivedAt ?? new Date().toISOString(),
+      source_label: null,
+      summary_prefix: null,
+      operator_id: null,
+      operator_name: null,
+      operator_role: null,
+      ip_address: null,
+      candidate_name: null,
+      candidate_id: null,
+      resume_file_path: objectKey || null,
+      resume_text: d.resume_text,
+    },
+    trace: undefined,
+  };
 }
 
-function absoluteSample(name: string): string {
-  return path.resolve("data", "sample-resumes", name);
+type FetchAndParseResult = {
+  parsedData: Record<string, unknown>;
+  mode: "robohire" | "llm-only" | "llm-fallback" | "llm-fixture";
+  modelUsed: string;
+  requestId?: string;
+  cached: boolean;
+  documentId?: string;
+  savedAs?: string;
+  durationMs: number;
+  parseDurationMs: number;
+  inputBytes: number;
+  textChars: number;
+  sourceDescription: string;
+  fallbackReason?: string;
+};
+
+function buildOutboundPayload(
+  inbound: ResumeDownloadedPayload,
+  extracted: FetchAndParseResult,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  // Echo all 16 transport fields verbatim (RAAS contract §3).
+  for (const k of TRANSPORT_FIELDS) {
+    out[k] = (inbound as Record<string, unknown>)[k] ?? null;
+  }
+  // Spec §4: payload.parsed.data = RoboHire response data field, verbatim.
+  out.parsed = { data: extracted.parsedData };
+
+  // AO diagnostic fields (RAAS ignores).
+  out.parser_version = PARSER_VERSION;
+  out.parser_mode = extracted.mode;
+  out.parser_model_used = extracted.modelUsed;
+  out.parser_request_id = extracted.requestId ?? null;
+  out.parser_cached = extracted.cached;
+  out.parser_document_id = extracted.documentId ?? null;
+  out.parser_saved_as = extracted.savedAs ?? null;
+  out.parser_duration_ms = extracted.durationMs;
+  out.parsed_at = new Date().toISOString();
+  if (extracted.fallbackReason) out.parser_fallback_reason = extracted.fallbackReason;
+  return out;
 }
 
-function hasStructuredResumePayload(p: ParsedResume): boolean {
-  const nonEmpty = (v: unknown): v is string =>
-    typeof v === "string" && v.trim().length > 0;
+function hasMeaningfulData(d: Record<string, unknown>): boolean {
+  const a = d as any;
   return Boolean(
-    nonEmpty(p.candidate.name) ||
-      nonEmpty(p.candidate.mobile) ||
-      nonEmpty(p.candidate.email) ||
-      nonEmpty(p.runtime.current_title) ||
-      nonEmpty(p.runtime.current_company) ||
-      (Array.isArray(p.resume.skills_extracted) && p.resume.skills_extracted.length > 0),
+    (typeof a?.name === "string" && a.name.trim()) ||
+      (typeof a?.email === "string" && a.email.trim()) ||
+      (typeof a?.phone === "string" && a.phone.trim()) ||
+      (Array.isArray(a?.experience) && a.experience.length > 0) ||
+      (typeof a?.skills === "object" && a.skills !== null) ||
+      (Array.isArray(a?.skills) && a.skills.length > 0),
   );
 }
 
-import type { ExtractResult } from "../../llm/resume-extractor";
-
-function buildResumeProcessedPayload(
-  source: ResumeDownloadedData,
-  extracted: ExtractResult,
-) {
-  // Prefer canonical fields from RAAS event when present; otherwise
-  // synthesize from the AO-test inputs.
-  const objectKey = source.objectKey ?? source.resume_file_paths?.[0] ?? null;
-  const filename =
-    source.filename ?? (objectKey ? path.basename(objectKey) : null);
-
-  return {
-    // Source passthrough (spec §3.2)
-    bucket: source.bucket ?? "recruit-resume-raw",
-    objectKey,
-    filename,
-    hrFolder: source.hrFolder ?? null,
-    employeeId: source.employeeId ?? null,
-    etag: source.etag ?? null,
-    size: source.size ?? null,
-    sourceEventName: source.sourceEventName ?? null,
-    receivedAt: source.receivedAt ?? new Date().toISOString(),
-    job_requisition_id: source.job_requisition_id ?? null,
-
-    // 4-object structured payload
-    candidate: extracted.parsed.candidate,
-    candidate_expectation: extracted.parsed.candidate_expectation,
-    resume: extracted.parsed.resume,
-    runtime: extracted.parsed.runtime,
-
-    // Audit
-    parsedAt: new Date().toISOString(),
-    parserVersion: `ao+${extracted.mode}@${MAPPING_VERSION}`,
-    parserMode: extracted.mode,
-    parserModelUsed: extracted.modelUsed,
-    parserDurationMs: extracted.duration_ms,
-    parserRequestId: extracted.requestId,
-    parserCached: extracted.cached,
-  };
+function countSkills(skills: unknown): number {
+  if (Array.isArray(skills)) return skills.length;
+  if (skills && typeof skills === "object") {
+    const s = skills as Record<string, unknown>;
+    let total = 0;
+    for (const arr of Object.values(s)) {
+      if (Array.isArray(arr)) total += arr.length;
+    }
+    return total;
+  }
+  return 0;
 }

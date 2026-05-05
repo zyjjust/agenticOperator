@@ -39,16 +39,23 @@ export async function GET(req: Request): Promise<Response> {
 
   for (const s of sources) {
     try {
-      const r = await fetch(`${s.url}/v1/events?limit=${limit}`, {
-        signal: AbortSignal.timeout(8_000),
-      });
+      // Pass nameFilter UPSTREAM so Inngest dev returns the right slice.
+      // Filtering client-side after a small `limit` fetch is broken — if
+      // the most-recent `limit` events don't include the filtered name,
+      // we'd return empty/sparse results even when matching events exist.
+      // Inngest dev /v1/events accepts ?name= (NOT event_name) for
+      // server-side filtering. Verified empirically against the dev
+      // server build shipped with inngest-cli.
+      const upstreamUrl = new URL(`${s.url}/v1/events`);
+      upstreamUrl.searchParams.set("limit", String(limit));
+      if (nameFilter) upstreamUrl.searchParams.set("name", nameFilter);
+      const r = await fetch(upstreamUrl, { signal: AbortSignal.timeout(8_000) });
       if (!r.ok) {
         errors.push({ source: s.label, message: `${r.status} ${r.statusText}` });
         continue;
       }
       const body = (await r.json()) as { data?: InngestEvent[] };
       for (const e of body.data ?? []) {
-        if (nameFilter && e.name !== nameFilter) continue;
         all.push({ ...e, _source: s.label });
       }
     } catch (e) {

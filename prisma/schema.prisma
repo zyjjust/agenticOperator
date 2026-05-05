@@ -389,7 +389,66 @@ model ExecutionTrace {
 }
 
 // =====================================================================
-// Schema status: 22 tables (10 P3-foundation + 12 chunk-1 additions).
+// Recruitment workflow: requirement → JD pipeline (workflow nodes 1-2 → 4)
+// =====================================================================
+
+model JobRequisition {
+  id              String   @id                 // requisition_id (uuid or short)
+  client          String                       // 客户名 / company name
+  title           String                       // 岗位名称
+  city            String?
+  headcount       Int?                         // 计划招聘人数
+  salaryRangeMin  Int?                         // CNY/月
+  salaryRangeMax  Int?
+  responsibilities String?                     // 岗位职责（多行 markdown）
+  requirements     String?                     // 任职要求（硬性 + 软性）
+  niceToHaves      String?                     // 加分项
+  source           String   @default("manual") // manual | sync
+  status           String   @default("pending_clarification")
+                                                // pending_clarification | clarified | jd_ready | published | closed
+  rawPayload       String?                     // 原始 REQUIREMENT_LOGGED payload (JSON string)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  jds              JobDescription[]
+}
+
+model JobDescription {
+  id                   String   @id              // jd_id (uuid)
+  requisitionId        String                    // FK → JobRequisition.id
+  client               String
+  title                String                    // 标准化职位名称
+  jdContent            String                    // 完整 JD 文本（markdown / JSON-string）
+  responsibilities     String?
+  requirements         String?
+  niceToHaves          String?
+  searchKeywords       String?                   // top-5 keywords as comma-separated string
+  qualityScore         Float?
+  qualitySuggestions   String?                   // JSON string array
+  marketCompetitiveness String?                  // 高 / 中 / 低
+
+  // ── 结构化匹配签名（per JOB_REQUISITION_GENERATED.payload） ──
+  mustHaveSkills       String?                   // JSON string of string[]
+  niceToHaveSkills     String?                   // JSON string of string[]
+  degreeRequirement    String?                   // 本科及以上 / 硕士及以上 / 不限
+  educationRequirement String?                   // 计算机相关专业 / 不限
+  languageRequirements String?                   // 英语读写流利 / 无
+  negativeRequirement  String?                   // 排除条件
+  workYears            Int?                      // 最少工作年限
+  expectedLevel        String?                   // T3-T4 / 中3-高1
+  interviewMode        String?                   // 现场面试 / 视频面试
+
+  status               String   @default("draft") // draft | approved | rejected | published
+  generatorMode        String?                   // robohire | llm | manual
+  generatorModel       String?                   // model used (e.g. gemini-3-flash-preview)
+  generatorRequestId   String?
+  generatorDurationMs  Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  requisition          JobRequisition @relation(fields: [requisitionId], references: [id])
+}
+
+// =====================================================================
+// Schema status: 24 tables (10 P3-foundation + 12 chunk-1 + 2 recruitment).
 //
 // Skipped for later (advanced ML/KB; not consumed by current AO routes —
 // add when their service modules get ported in chunk 2):

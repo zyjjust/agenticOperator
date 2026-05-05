@@ -6,8 +6,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "concurrently -n next,ws,em,inngest -c blue,cyan,green,magenta -k --kill-others-on-fail \"next dev -p 3002\" \"npm --prefix Action_and_Event_Manager/workflow-studio/server run dev\" \"npm --prefix Action_and_Event_Manager/packages/server run dev\" \"npx -y inngest-cli@latest dev\"",
+    "dev": "next dev -p 3002",
     "dev:next-only": "next dev -p 3002",
+    "dev:legacy-multi": "concurrently -n next,ws,em,inngest -c blue,cyan,green,magenta -k --kill-others-on-fail \"next dev -p 3002\" \"npm --prefix Action_and_Event_Manager/workflow-studio/server run dev\" \"npm --prefix Action_and_Event_Manager/packages/server run dev\" \"npx -y inngest-cli@latest dev\"",
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "next lint",
@@ -28,7 +29,8 @@
     "openai": "^6.34.0",
     "pdf-parse": "^2.4.5",
     "react": "19.2.5",
-    "react-dom": "19.2.5"
+    "react-dom": "19.2.5",
+    "unpdf": "^1.6.0"
   },
   "devDependencies": {
     "@prisma/adapter-better-sqlite3": "^7.8.0",
