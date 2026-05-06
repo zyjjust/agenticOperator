@@ -25,13 +25,21 @@
 // the new RPA version. Re-enable here only if rolling back.
 // import { createJdAgent } from "../ws/agents/create-jd";
 
-import { matchResumeAgent } from "../ws/agents/match-resume";
+// Disabled 2026-05-06 — superseded by
+// resume-parser-agent/lib/inngest/agents/match-resume-agent.ts (port 3020).
+// New RPA matcher owns the RESUME_PROCESSED → MATCH_* flow end-to-end and
+// emits payloads RAAS resume-processed-ingest accepts (status=ingested).
+// The legacy ws/ matcher's payload was being skipped by RAAS as
+// missing_required_fields. Keeping it side-by-side fanned MATCH_* out
+// twice per resume — now switched off. Re-enable here only if rolling back.
+// import { matchResumeAgent } from "../ws/agents/match-resume";
 
-// Resume Download → match flow stays in AO-main (per user instruction
-// 2026-05-06). New resume-parser-agent owns parser + new matcher; this
-// AO-main matchResumeAgent is the legacy ws/ path kept side-by-side.
-export const allFunctions = [
-  // createJdAgent,            // node 4 — disabled, see comment above
+// AO-main no longer registers any Inngest functions. The full
+// REQUIREMENT_LOGGED → JD_GENERATED → RESUME_DOWNLOADED → RESUME_PROCESSED
+// → MATCH_* chain is owned by resume-parser-agent (port 3020). AO-main
+// remains running for its UI / API routes only.
+export const allFunctions: never[] = [
+  // createJdAgent,            // node 4   — disabled, see comment above
   // sampleResumeParserAgent,  // node 9-1 — disabled, see comment above
-  matchResumeAgent,         // node 10
+  // matchResumeAgent,         // node 10  — disabled 2026-05-06
 ];
