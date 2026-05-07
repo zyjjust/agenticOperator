@@ -6,9 +6,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "next dev -p 3002",
+    "dev": "npm run inngest:up && next dev -p 3002",
     "dev:next-only": "next dev -p 3002",
-    "dev:legacy-multi": "concurrently -n next,ws,em,inngest -c blue,cyan,green,magenta -k --kill-others-on-fail \"next dev -p 3002\" \"npm --prefix Action_and_Event_Manager/workflow-studio/server run dev\" \"npm --prefix Action_and_Event_Manager/packages/server run dev\" \"npx -y inngest-cli@latest dev\"",
+    "inngest:up": "docker compose -f docker-compose.inngest.yml up -d",
+    "inngest:down": "docker compose -f docker-compose.inngest.yml down",
+    "inngest:logs": "docker compose -f docker-compose.inngest.yml logs -f",
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "next lint",
@@ -23,14 +25,16 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "eventsource-parser": "^3.0.8",
-    "inngest": "^4.2.4",
+    "inngest": "^4.3.0",
     "minio": "^8.0.7",
+    "neo4j-driver": "^6.0.1",
     "next": "16.2.4",
     "openai": "^6.34.0",
     "pdf-parse": "^2.4.5",
     "react": "19.2.5",
     "react-dom": "19.2.5",
-    "unpdf": "^1.6.0"
+    "unpdf": "^1.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@prisma/adapter-better-sqlite3": "^7.8.0",

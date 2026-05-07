@@ -30,6 +30,8 @@ export async function GET(req: Request): Promise<Response> {
         assignee: t.assignee ?? null,
         deadline: t.deadline ? t.deadline.toISOString() : null,
         createdAt: t.createdAt.toISOString(),
+        triggeringEventInstanceId: t.triggeringEventInstanceId ?? null,
+        triggeringEventName: t.triggeringEventName ?? null,
       };
     });
     const body: HumanTasksResponse = {

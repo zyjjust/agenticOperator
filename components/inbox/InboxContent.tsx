@@ -175,8 +175,24 @@ function Card({ card, active, onClick }: { card: HumanTaskCard; active: boolean;
         <SlaBadge deadline={card.deadline} />
       </div>
       <div className="text-[13px] font-medium text-ink-1 mb-1">{card.title}</div>
-      <div className="text-[11.5px] text-ink-3">
-        run {card.runId.slice(-8)} · {card.assignee ?? "未分配"}
+      <div className="text-[11.5px] text-ink-3 flex items-center gap-2 flex-wrap">
+        <span>run {card.runId.slice(-8)} · {card.assignee ?? "未分配"}</span>
+        {card.triggeringEventName && (
+          <span
+            className="mono text-[10px] px-1.5 py-px rounded-sm"
+            style={{
+              background: "color-mix(in oklab, var(--c-accent) 8%, transparent)",
+              color: "var(--c-accent)",
+            }}
+            title={
+              card.triggeringEventInstanceId
+                ? `由事件 ${card.triggeringEventName}（实例 ${card.triggeringEventInstanceId}）触发`
+                : `由事件 ${card.triggeringEventName} 触发`
+            }
+          >
+            ← {card.triggeringEventName}
+          </span>
+        )}
       </div>
     </button>
   );
@@ -230,6 +246,29 @@ function DetailPane({
       <div className="border-b border-line p-3">
         <div className="text-[13px] font-semibold mb-1">{detail.title}</div>
         <div className="text-[11.5px] text-ink-3 font-mono">{detail.id}</div>
+        {detail.triggeringEventName && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11.5px]">
+            <span className="text-ink-3">触发事件</span>
+            <a
+              href={`/events?event=${encodeURIComponent(detail.triggeringEventName)}`}
+              className="mono px-1.5 py-px rounded-sm no-underline"
+              style={{
+                background: "color-mix(in oklab, var(--c-accent) 8%, transparent)",
+                color: "var(--c-accent)",
+              }}
+            >
+              {detail.triggeringEventName}
+            </a>
+            {detail.triggeringEventInstanceId && (
+              <span
+                className="mono text-[10.5px] text-ink-3"
+                title={detail.triggeringEventInstanceId}
+              >
+                · 实例 {detail.triggeringEventInstanceId.slice(0, 8)}…
+              </span>
+            )}
+          </div>
+        )}
       </div>
       {detail.aiOpinion != null && (
         <div className="border-b border-line p-3">

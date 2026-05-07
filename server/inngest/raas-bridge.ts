@@ -9,8 +9,8 @@
 // Started by app/api/raas-bridge/start/route.ts (or any other server-side
 // boot path); polls every RAAS_BRIDGE_POLL_INTERVAL_MS.
 
-import { inngest } from "./client";
 import { prisma } from "../db";
+import { em } from "../em";
 
 const SHARED_URL = process.env.RAAS_INNGEST_URL ?? "http://10.100.0.70:8288";
 const POLL_INTERVAL = Number(process.env.RAAS_BRIDGE_POLL_INTERVAL_MS ?? 5000);
@@ -34,6 +34,13 @@ let _lastPolledAt = "";
 let _stats = {
   pollsCompleted: 0,
   eventsBridged: 0,
+  // Refined per-result counters (since em.publish has 5 outcomes vs raw send's 2).
+  // Sum of these always equals eventsBridged.
+  accepted: 0,
+  rejectedSchema: 0,
+  rejectedFilter: 0,
+  duplicate: 0,
+  emDegraded: 0,
   errors: 0,
   lastError: null as string | null,
   lastEventBridgedAt: null as string | null,
@@ -99,30 +106,58 @@ async function tick(): Promise<void> {
         continue;
       }
 
-      // New event from RAAS — re-emit locally so AO functions process it.
+      // New event from RAAS — push through em.publish so it gets schema
+      // validation + audit + EventInstance row + EVENT_REJECTED on failure.
+      // em.publish never throws; we always count the seen id so the bridge
+      // can't get stuck retrying the same poison message.
       try {
-        await inngest.send({
-          name: e.name,
-          data: e.data as Record<string, unknown>,
+        const result = await em.publish(e.name, e.data, {
+          source: "raas-bridge",
+          // Use upstream's shared id as both dedup key and Inngest idempotency key.
+          // RAAS replays the same id when it thinks delivery failed; we collapse it.
+          externalEventId: e.id,
         });
         _seenIds.add(e.id);
         _stats.eventsBridged++;
         _stats.lastEventBridgedAt = new Date().toISOString();
+        if (result.accepted) {
+          _stats.accepted++;
+        } else {
+          switch (result.reason) {
+            case "schema":
+            case "no_schema":
+              _stats.rejectedSchema++;
+              break;
+            case "filter":
+              _stats.rejectedFilter++;
+              break;
+            case "duplicate":
+              _stats.duplicate++;
+              break;
+            case "em_degraded":
+              _stats.emDegraded++;
+              break;
+          }
+        }
 
-        // Log to AgentActivity so /agent-demo + /events firehose can show
-        // the bridge activity.
+        // Keep the legacy AgentActivity row for backwards-compat with the
+        // existing /agent-demo + /events stream views. Once those views
+        // migrate to read EventInstance directly we can drop this.
         await prisma.agentActivity
           .create({
             data: {
               nodeId: "raas-bridge",
               agentName: "RAASBridge",
               type: "event_received",
-              narrative: `Bridged ${e.name} from RAAS · ${e.id}`,
+              narrative: result.accepted
+                ? `Bridged ${e.name} from RAAS · ${e.id}`
+                : `Bridged ${e.name} from RAAS · ${e.id} · ${result.reason}`,
               metadata: JSON.stringify({
                 source: "raas-bridge",
                 shared_event_id: e.id,
                 event_name: e.name,
                 data: e.data,
+                em_publish: result,
               }),
             },
           })
@@ -130,11 +165,20 @@ async function tick(): Promise<void> {
             console.warn("[raas-bridge] AgentActivity write failed:", err.message);
           });
 
-        console.log(`[raas-bridge] bridged ${e.name} (${e.id})`);
-      } catch (sendErr) {
+        if (result.accepted) {
+          console.log(`[raas-bridge] bridged ${e.name} (${e.id}) v${result.schemaVersionUsed}`);
+        } else {
+          console.warn(
+            `[raas-bridge] bridged ${e.name} (${e.id}) → ${result.reason}`,
+          );
+        }
+      } catch (publishErr) {
+        // em.publish should never throw, but defend in depth so the poll
+        // loop keeps making progress.
         _stats.errors++;
-        _stats.lastError = `send: ${(sendErr as Error).message}`;
-        console.error("[raas-bridge] re-emit failed:", sendErr);
+        _stats.lastError = `publish: ${(publishErr as Error).message}`;
+        _seenIds.add(e.id);
+        console.error("[raas-bridge] em.publish unexpected throw:", publishErr);
       }
     }
 

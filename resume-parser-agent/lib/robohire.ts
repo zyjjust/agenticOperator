@@ -1,14 +1,15 @@
-// RoboHire HTTP wrapper
+// RAAS API wrapper — proxies RoboHire resume parsing & matching via internal gateway.
 // /parse-resume: multipart/form-data 上传 PDF → 结构化 JSON
 // /match-resume: JSON 提交 resume + jd 文本 → 匹配评分
 //
-// API doc: api-external-resume-parsing-and-matching.md
+// Auth: AGENT_API_KEY (issued by raas team; AO must NOT call api.robohire.io directly)
+// Base: RAAS_API_BASE_URL (dev: http://localhost:3001; prod: https://aicoe.chinasoftinc.com/raas-api)
 
-const BASE = process.env.ROBOHIRE_BASE_URL ?? 'https://api.robohire.io';
+const BASE = process.env.RAAS_API_BASE_URL ?? 'http://localhost:3001';
 
 function authHeader() {
-  const key = process.env.ROBOHIRE_API_KEY;
-  if (!key) throw new Error('ROBOHIRE_API_KEY is not set');
+  const key = process.env.AGENT_API_KEY;
+  if (!key) throw new Error('AGENT_API_KEY is not set');
   return { Authorization: `Bearer ${key}` };
 }
 

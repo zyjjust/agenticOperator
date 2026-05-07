@@ -1,18 +1,41 @@
 "use client";
 import React from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApp } from "@/lib/i18n";
 import { Ic } from "@/components/shared/Ic";
-import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
+import { Badge, Btn, StatusDot, EmptyState } from "@/components/shared/atoms";
 import { EVENT_CATALOG, EventDef, kindDot, STAGE_LABELS } from "@/lib/events-catalog";
 import { fetchJson } from "@/lib/api/client";
-import type { EventsResponse } from "@/lib/api/types";
+import type { EventsResponse, EventsMeta } from "@/lib/api/types";
 import {
   useInngestEvents,
   type InngestEventRow,
   type UseInngestEventsResult,
 } from "@/lib/api/inngest-events";
+import { useEmHealth, type UseEmHealthResult } from "@/lib/api/em-health";
+import { useEventStats, type EventStats } from "@/lib/api/event-stats";
+import { EventInstancesTab } from "./EventInstancesTab";
 
-// Convert API EventContract → legacy EventDef shape.
+// Top-level sub-tabs (UX review §A.4). Only "registry" and "stream" are
+// fully populated today — DLQ / rejected / instances / causality wait for
+// the em.publish library to start writing EventInstance rows. They render
+// EmptyState now so the IA is visible from day one.
+type TopTab = "registry" | "stream" | "dlq" | "rejected" | "instances" | "causality";
+const TOP_TABS: { id: TopTab; label: string; description: string }[] = [
+  { id: "registry", label: "注册表", description: "Neo4j 同步的事件契约与 schema" },
+  { id: "stream", label: "实时流", description: "Inngest 总线上的实时事件" },
+  { id: "dlq", label: "死信", description: "Schema / filter 失败被拒的事件（DLQ）" },
+  { id: "rejected", label: "拒绝", description: "网关 filter 拒绝或无订阅者的事件" },
+  { id: "instances", label: "实例追踪", description: "按 trace_id 检索单条 EventInstance" },
+  { id: "causality", label: "因果链", description: "事件因果图（caused_by 关联）" },
+];
+
+function isTopTab(s: string | null): s is TopTab {
+  return !!s && TOP_TABS.some((t) => t.id === s);
+}
+
+// Convert API EventContract → legacy EventDef shape, preserving provenance
+// so the registry can badge each row.
 function toLegacy(c: EventsResponse["events"][number]): EventDef {
   return {
     name: c.name,
@@ -27,14 +50,70 @@ function toLegacy(c: EventsResponse["events"][number]): EventDef {
     emits: c.emits,
     data: [],
     mutations: [],
+    source: c.source,
+    syncedAt: c.syncedAt,
+    activeVersions: c.activeVersions,
+    schemaSource: c.schemaSource,
+    versionSources: c.versionSources,
+    fields: c.fields,
+    mutationsV2: c.mutations,
+    sourceAction: c.sourceAction,
+    schema: c.schema,
+    isBreakingChange: c.isBreakingChange,
+    lastChangedAt: c.lastChangedAt,
+    retiredAt: c.retiredAt,
+    sourceFile: c.sourceFile,
   };
 }
 
 export function EventsContent() {
-  const [selectedName, setSelectedName] = React.useState("ANALYSIS_COMPLETED");
-  const [tab, setTab] = React.useState("overview");
-  const [query, setQuery] = React.useState("");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // URL state: ?subtab=registry|stream|dlq|... &event=NAME &detailtab=overview|schema|subs|instances
+  const topTabParam = searchParams.get("subtab");
+  const topTab: TopTab = isTopTab(topTabParam) ? topTabParam : "registry";
+  const eventParam = searchParams.get("event");
+  const detailTabParam = searchParams.get("detailtab") ?? "overview";
+  const queryParam = searchParams.get("q") ?? "";
+
+  const setTopTab = React.useCallback(
+    (t: TopTab) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.set("subtab", t);
+      router.replace(`/events?${sp.toString()}`);
+    },
+    [router, searchParams],
+  );
+  const setSelectedName = React.useCallback(
+    (name: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.set("event", name);
+      router.replace(`/events?${sp.toString()}`);
+    },
+    [router, searchParams],
+  );
+  const setDetailTab = React.useCallback(
+    (t: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      sp.set("detailtab", t);
+      router.replace(`/events?${sp.toString()}`);
+    },
+    [router, searchParams],
+  );
+  const setQuery = React.useCallback(
+    (q: string) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (q) sp.set("q", q);
+      else sp.delete("q");
+      router.replace(`/events?${sp.toString()}`);
+    },
+    [router, searchParams],
+  );
+
   const [apiEvents, setApiEvents] = React.useState<EventDef[] | null>(null);
+  const [eventsMeta, setEventsMeta] = React.useState<EventsMeta | null>(null);
+  const [bulkStats, setBulkStats] = React.useState<Record<string, { rate24h: number; rateLastHour: number; errCount24h: number }>>({});
 
   // Live Inngest stream — shared between header KPIs and the right sidebar.
   const [streamPaused, setStreamPaused] = React.useState(false);
@@ -47,46 +126,218 @@ export function EventsContent() {
     includeShared,
   });
 
-  React.useEffect(() => {
-    fetchJson<EventsResponse>("/api/events")
-      .then((res) => setApiEvents(res.events.map(toLegacy)))
-      .catch(() => {/* keep null → fallback */});
-  }, []);
+  // Event Manager health — Neo4j connectivity + sync status + degraded-mode signal.
+  const emHealth = useEmHealth();
 
-  const events = apiEvents ?? EVENT_CATALOG;
+  // Refetch on mount, and when emHealth.syncNow() succeeds (lastSyncAt advances).
+  const lastSeenSync = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const syncedAt = emHealth.data?.neo4j.lastSyncAt ?? null;
+    const changed = syncedAt !== lastSeenSync.current;
+    lastSeenSync.current = syncedAt;
+    if (apiEvents !== null && !changed) return;
+    fetchJson<EventsResponse>("/api/events")
+      .then((res) => {
+        setApiEvents(res.events.map(toLegacy));
+        setEventsMeta(res.meta);
+      })
+      .catch(() => {/* keep null → fallback */});
+  }, [apiEvents, emHealth.data?.neo4j.lastSyncAt]);
+
+  // Bulk stats poll — keeps RegistryRow's per-row rate honest. 15 s interval
+  // is enough; the registry list isn't a real-time view.
+  React.useEffect(() => {
+    if (!apiEvents || apiEvents.length === 0) return;
+    let cancelled = false;
+    const tick = () => {
+      const names = apiEvents.map((e) => e.name).slice(0, 100);
+      fetchJson<{ stats: typeof bulkStats }>(
+        `/api/em/event-stats?names=${encodeURIComponent(names.join(","))}`,
+      )
+        .then((r) => {
+          if (!cancelled) setBulkStats(r.stats);
+        })
+        .catch(() => { /* keep last good */ });
+    };
+    tick();
+    const id = setInterval(tick, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiEvents?.length]);
+
+  // When apiEvents is null (very first render), synthesize hardcoded entries
+  // with source tag so the banner state is correct even pre-fetch.
+  const events: EventDef[] = apiEvents ?? EVENT_CATALOG.map((e) => ({ ...e, source: "hardcoded" as const }));
+  const selectedName = eventParam ?? events[0]?.name ?? "";
   const selected = events.find((e) => e.name === selectedName) || events[0];
 
   const grouped = React.useMemo(() => {
     const groups: Record<string, EventDef[]> = {};
-    const q = query.trim().toUpperCase();
+    const q = queryParam.trim().toUpperCase();
     for (const e of events) {
       if (q && !e.name.includes(q)) continue;
       (groups[e.stage] ||= []).push(e);
     }
     return groups;
-  }, [query, events]);
+  }, [queryParam, events]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <EMSubHeader stream={stream} />
-      <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "300px 1fr 340px" }}>
-        <EventRegistry grouped={grouped} selectedName={selectedName} onSelect={setSelectedName} query={query} setQuery={setQuery} />
-        <EventDetail event={selected} tab={tab} setTab={setTab} />
-        <EventLiveStream
-          stream={stream}
-          paused={streamPaused}
-          setPaused={setStreamPaused}
-          includeShared={includeShared}
-          setIncludeShared={setIncludeShared}
-          filter={streamFilter}
-          setFilter={setStreamFilter}
-        />
-      </div>
+      <EMSubHeader stream={stream} emHealth={emHealth} />
+      <ProvenanceBanner meta={eventsMeta} emHealth={emHealth} />
+      <TopSubTabs current={topTab} onChange={setTopTab} />
+      {topTab === "registry" && (
+        <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "300px 1fr 340px" }}>
+          <EventRegistry
+            grouped={grouped}
+            selectedName={selectedName}
+            onSelect={setSelectedName}
+            query={queryParam}
+            setQuery={setQuery}
+            bulkStats={bulkStats}
+          />
+          <EventDetail event={selected} tab={detailTabParam} setTab={setDetailTab} />
+          <EventLiveStream
+            stream={stream}
+            paused={streamPaused}
+            setPaused={setStreamPaused}
+            includeShared={includeShared}
+            setIncludeShared={setIncludeShared}
+            filter={streamFilter}
+            setFilter={setStreamFilter}
+          />
+        </div>
+      )}
+      {topTab === "stream" && (
+        <div className="flex-1 min-h-0 flex">
+          <EventLiveStream
+            stream={stream}
+            paused={streamPaused}
+            setPaused={setStreamPaused}
+            includeShared={includeShared}
+            setIncludeShared={setIncludeShared}
+            filter={streamFilter}
+            setFilter={setStreamFilter}
+            full
+          />
+        </div>
+      )}
+      {topTab === "dlq" && (
+        <EventInstancesTab mode="dlq" query={{ statusIn: ["rejected_schema"] }} />
+      )}
+      {topTab === "rejected" && (
+        <EventInstancesTab mode="rejected" query={{ statusIn: ["rejected_filter"] }} />
+      )}
+      {topTab === "instances" && (
+        <EventInstancesTab mode="instances" query={{}} />
+      )}
+      {topTab === "causality" && (
+        <CausalityTabRouter searchParams={searchParams} />
+      )}
     </div>
   );
 }
 
-function EMSubHeader({ stream }: { stream: UseInngestEventsResult }) {
+// Causality is a roving tab — when a row in another tab links to its
+// upstream (?causedByEventId=...), this tab shows the immediate children
+// of that event id. Without a focal id it lists every cascade event.
+function CausalityTabRouter({ searchParams }: { searchParams: ReturnType<typeof useSearchParams> }) {
+  const causedById = searchParams.get("causedByEventId") ?? undefined;
+  return (
+    <EventInstancesTab
+      mode="causality"
+      query={
+        causedById
+          ? { causedByEventId: causedById }
+          : {
+              // Show every accepted row that DID cause something — i.e. the roots
+              // of cascade chains. Approximated as: rows where causedByEventId is null.
+              // Better filter once we have indexed counts; good enough for now.
+            }
+      }
+    />
+  );
+}
+
+function TopSubTabs({ current, onChange }: { current: TopTab; onChange: (t: TopTab) => void }) {
+  return (
+    <div
+      className="border-b border-line bg-surface flex"
+      style={{ padding: "0 22px", gap: 0 }}
+    >
+      {TOP_TABS.map((t) => {
+        const active = current === t.id;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            title={t.description}
+            className="bg-transparent border-0 cursor-pointer text-[12.5px]"
+            style={{
+              padding: "10px 14px",
+              color: active ? "var(--c-ink-1)" : "var(--c-ink-3)",
+              fontWeight: active ? 600 : 500,
+              borderBottom: active ? "2px solid var(--c-accent)" : "2px solid transparent",
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Banner — shown only when /api/events served fallback hardcoded data
+// instead of the Neo4j-synced cache. Tells ops what to do (connect VPN
+// or click "立即同步"). Hidden when source === 'neo4j'.
+function ProvenanceBanner({
+  meta,
+  emHealth,
+}: {
+  meta: EventsMeta | null;
+  emHealth: UseEmHealthResult;
+}) {
+  if (!meta || meta.source === "neo4j") return null;
+  const neo4jReachable = emHealth.data?.neo4j.reachable ?? false;
+  const lastSync = meta.lastNeo4jSyncAt
+    ? new Date(meta.lastNeo4jSyncAt).toLocaleString(undefined, { hour12: false })
+    : "从未同步";
+  const reason = !emHealth.data?.neo4j.configured
+    ? "Neo4j 未配置（检查 RAAS_LINKS_NEO4J_* 环境变量）"
+    : !neo4jReachable
+      ? `Neo4j 不可达${meta.lastNeo4jError ? ` · ${meta.lastNeo4jError}` : ""}`
+      : `Neo4j 缓存为空（同步未完成或 Neo4j 上无 EventDefinition）`;
+
+  return (
+    <div
+      className="border-b flex items-center gap-3"
+      style={{
+        background: "color-mix(in oklab, var(--c-warn) 8%, transparent)",
+        borderColor: "color-mix(in oklab, var(--c-warn) 30%, var(--c-line))",
+        padding: "8px 22px",
+      }}
+    >
+      <Ic.alert />
+      <div className="flex-1 text-[12px]">
+        <span className="font-semibold" style={{ color: "var(--c-warn)" }}>
+          本地兜底数据
+        </span>
+        <span className="text-ink-2">
+          {" — "}{meta.totalHardcodedRows} 条事件来自 lib/events-catalog.ts，**Neo4j 不是真相**：{reason}。上次成功同步：{lastSync}。
+        </span>
+      </div>
+      <Btn size="sm" onClick={() => void emHealth.syncNow()}>
+        <Ic.bolt /> 立即同步
+      </Btn>
+    </div>
+  );
+}
+
+function EMSubHeader({ stream, emHealth }: { stream: UseInngestEventsResult; emHealth: UseEmHealthResult }) {
   const { t } = useApp();
 
   // Real counts derived from the live Inngest poll.
@@ -108,41 +359,80 @@ function EMSubHeader({ stream }: { stream: UseInngestEventsResult }) {
     ? `${stream.sources.join("+") || "local"} · ${stream.lastFetchAt.toLocaleTimeString(undefined, { hour12: false })}`
     : "connecting…";
 
+  // EM / Neo4j slot — replaces the mock "P95 delivery" cell with real health.
+  // healthy → green; degraded → orange; down/unconfigured → red.
+  const em = emHealth.data;
+  const emState = em?.state ?? (emHealth.loading ? "…" : "unknown");
+  const emTone: "up" | "down" | "muted" =
+    emState === "healthy" ? "up" : emState === "degraded" || emState === "down" ? "down" : "muted";
+  const emValue =
+    emState === "healthy"
+      ? "OK"
+      : emState === "degraded"
+        ? "降级"
+        : emState === "down"
+          ? "DOWN"
+          : emState === "unconfigured"
+            ? "未配"
+            : "…";
+  const emDelta = em
+    ? em.neo4j.reachable
+      ? `Neo4j · ${em.neo4j.lastUpserted} 同步`
+      : em.neo4j.configured
+        ? `Neo4j 不通${em.neo4j.error ? ` · ${truncate(em.neo4j.error, 24)}` : ""}`
+        : "Neo4j 未配置"
+    : "正在检查";
+
+  // Only honest signals here. The 3 mock KPIs that used to live here
+  // (functions / backlog / DLQ counts) were lying — they didn't read any
+  // real source. Removed until em.publish-driven counters are in place.
   const stats = [
     { label: "events · 1m", value: last1m.toLocaleString(), delta: stream.connected ? "live" : "—", tone: stream.connected ? "up" : "muted" },
-    { label: "functions", value: "28 / 29", delta: "1 paused", tone: "muted" },
-    { label: t("em_backlog"), value: "142", delta: "−38", tone: "up" },
-    { label: t("em_dlq"), value: "6", delta: "+2", tone: "down" },
-    { label: "P95 delivery", value: "84ms", delta: "→ SLA", tone: "muted" },
+    { label: "EM · Neo4j", value: emValue, delta: emDelta, tone: emTone, onClick: () => void emHealth.syncNow() },
     { label: "Inngest 连接", value: inngestValue, delta: inngestDelta, tone: inngestOk ? "up" : stream.error ? "down" : "muted" },
-  ];
+  ] as const;
   return (
     <div className="border-b border-line bg-surface flex items-center gap-4.5" style={{ padding: "14px 22px", gap: 18 }}>
       <div>
         <div className="text-[15px] font-semibold tracking-tight">{t("em_title")}</div>
         <div className="text-ink-3 text-[12px] mt-px">{t("em_sub")}</div>
       </div>
-      <div className="flex-1 grid pl-4.5 border-l border-line" style={{ gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 14, paddingLeft: 18 }}>
-        {stats.map((s, i) => (
-          <div key={i}>
-            <div className="hint">{s.label}</div>
-            <div className="text-[16px] font-semibold tracking-tight tabular-nums">{s.value}</div>
+      <div className="flex-1 grid pl-4.5 border-l border-line" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14, paddingLeft: 18 }}>
+        {stats.map((s, i) => {
+          const onClick = "onClick" in s ? s.onClick : undefined;
+          const interactive = !!onClick;
+          return (
             <div
-              className="mono text-[10.5px]"
-              style={{
-                color: s.tone === "up" ? "var(--c-ok)" : s.tone === "down" ? "var(--c-err)" : "var(--c-ink-4)",
-              }}
+              key={i}
+              onClick={onClick}
+              className={interactive ? "cursor-pointer hover:bg-panel rounded-sm transition-colors" : ""}
+              style={interactive ? { padding: 4, margin: -4 } : undefined}
+              title={interactive ? "点击立即同步" : undefined}
             >
-              {s.delta}
+              <div className="hint">{s.label}</div>
+              <div className="text-[16px] font-semibold tracking-tight tabular-nums">{s.value}</div>
+              <div
+                className="mono text-[10.5px]"
+                style={{
+                  color: s.tone === "up" ? "var(--c-ok)" : s.tone === "down" ? "var(--c-err)" : "var(--c-ink-4)",
+                }}
+              >
+                {s.delta}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <Btn size="sm"><Ic.plus /> 新建事件</Btn>
-      <Btn size="sm" variant="primary"><Ic.bolt /> 发布事件</Btn>
+      {/* "新建事件 / 发布事件" 按钮已移除：AO 不做事件定义编辑（v2 §13.1 / Q1 决议）。 */}
     </div>
   );
 }
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+type BulkStats = Record<string, { rate24h: number; rateLastHour: number; errCount24h: number }>;
 
 function EventRegistry({
   grouped,
@@ -150,12 +440,14 @@ function EventRegistry({
   onSelect,
   query,
   setQuery,
+  bulkStats,
 }: {
   grouped: Record<string, EventDef[]>;
   selectedName: string;
   onSelect: (n: string) => void;
   query: string;
   setQuery: (s: string) => void;
+  bulkStats: BulkStats;
 }) {
   const { t } = useApp();
   const stageOrder = ["requirement", "jd", "resume", "match", "interview", "eval", "package", "submit", "system"];
@@ -193,7 +485,13 @@ function EventRegistry({
                 <span className="mono text-ink-4 font-medium">{items.length}</span>
               </div>
               {items.map((e) => (
-                <RegistryRow key={e.name} event={e} active={e.name === selectedName} onClick={() => onSelect(e.name)} />
+                <RegistryRow
+                  key={e.name}
+                  event={e}
+                  active={e.name === selectedName}
+                  onClick={() => onSelect(e.name)}
+                  liveStats={bulkStats[e.name]}
+                />
               ))}
             </div>
           );
@@ -203,7 +501,24 @@ function EventRegistry({
   );
 }
 
-function RegistryRow({ event, active, onClick }: { event: EventDef; active: boolean; onClick: () => void }) {
+function RegistryRow({
+  event,
+  active,
+  onClick,
+  liveStats,
+}: {
+  event: EventDef;
+  active: boolean;
+  onClick: () => void;
+  liveStats?: BulkStats[string];
+}) {
+  const isRetired = !!event.retiredAt;
+  const isBreaking = !!event.isBreakingChange;
+  // "Recently changed" = lastChangedAt within 24h; advances every time sync
+  // sees a content delta from Allmeta.
+  const isRecentlyChanged =
+    !!event.lastChangedAt &&
+    Date.now() - new Date(event.lastChangedAt).getTime() < 24 * 60 * 60 * 1000;
   return (
     <div
       onClick={onClick}
@@ -212,6 +527,7 @@ function RegistryRow({ event, active, onClick }: { event: EventDef; active: bool
         padding: "8px 14px",
         background: active ? "var(--c-accent-bg)" : "transparent",
         borderLeft: active ? "2px solid var(--c-accent)" : "2px solid transparent",
+        opacity: isRetired ? 0.6 : 1,
       }}
     >
       <span
@@ -222,15 +538,76 @@ function RegistryRow({ event, active, onClick }: { event: EventDef; active: bool
         }}
       />
       <div className="flex-1 min-w-0">
-        <div
-          className="mono text-[11px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis"
-          style={{ color: active ? "var(--c-accent)" : "var(--c-ink-1)" }}
-        >
-          {event.name}
+        <div className="flex items-center gap-1.5">
+          <div
+            className="mono text-[11px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis flex-1"
+            style={{
+              color: active ? "var(--c-accent)" : "var(--c-ink-1)",
+              textDecoration: isRetired ? "line-through" : undefined,
+            }}
+          >
+            {event.name}
+          </div>
+          {isRetired && (
+            <span
+              className="mono text-[9px] px-1 rounded-sm flex-shrink-0"
+              style={{ background: "var(--c-panel)", color: "var(--c-ink-3)", border: "1px solid var(--c-line)" }}
+              title={`Allmeta 已下架 · ${event.retiredAt ? new Date(event.retiredAt).toLocaleString(undefined, { hour12: false }) : ""}`}
+            >
+              已下架
+            </span>
+          )}
+          {isBreaking && !isRetired && (
+            <span
+              className="mono text-[9px] px-1 rounded-sm flex-shrink-0"
+              style={{
+                background: "color-mix(in oklab, var(--c-err) 14%, transparent)",
+                color: "var(--c-err)",
+              }}
+              title="Allmeta 标记为破坏性变更 (is_breaking_change=true)"
+            >
+              breaking
+            </span>
+          )}
+          {isRecentlyChanged && !isRetired && !isBreaking && (
+            <span
+              className="mono text-[9px] px-1 rounded-sm flex-shrink-0"
+              style={{
+                background: "color-mix(in oklab, var(--c-info) 14%, transparent)",
+                color: "var(--c-info)",
+              }}
+              title={`24h 内有更新 · ${event.lastChangedAt ? new Date(event.lastChangedAt).toLocaleString(undefined, { hour12: false }) : ""}`}
+            >
+              changed
+            </span>
+          )}
+          {event.source === "hardcoded" && (
+            <span
+              className="mono text-[9px] px-1 rounded-sm flex-shrink-0"
+              style={{
+                background: "color-mix(in oklab, var(--c-warn) 14%, transparent)",
+                color: "var(--c-warn)",
+              }}
+              title="本地兜底 — Neo4j 缓存为空时 fallback 到 lib/events-catalog.ts"
+            >
+              fallback
+            </span>
+          )}
         </div>
         <div className="mono text-[10px] text-ink-4 mt-px">
-          {event.rate.toLocaleString()}/h · {event.subscribers.length} sub
-          {event.err > 0 && <span style={{ color: "var(--c-err)" }}> · {event.err} err</span>}
+          {liveStats ? (
+            <>
+              {liveStats.rate24h.toLocaleString()} / 24h · {event.subscribers.length} sub
+              {liveStats.errCount24h > 0 && (
+                <span style={{ color: "var(--c-err)" }}> · {liveStats.errCount24h} err</span>
+              )}
+            </>
+          ) : (
+            <>
+              {event.rate.toLocaleString()}/h · {event.subscribers.length} sub
+              {event.err > 0 && <span style={{ color: "var(--c-err)" }}> · {event.err} err</span>}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -246,10 +623,7 @@ function EventDetail({ event, tab, setTab }: { event: EventDef; tab: string; set
         {tab === "overview" && <TabOverview event={event} />}
         {tab === "schema" && <TabSchema event={event} />}
         {tab === "subs" && <TabSubscribers event={event} />}
-        {tab === "runs" && <TabRuns event={event} />}
-        {tab === "history" && <TabHistory event={event} />}
-        {tab === "logs" && <TabLogs event={event} />}
-        {tab === "firehose" && <TabFirehose event={event} />}
+        {tab === "instances" && <TabInstances event={event} />}
       </div>
     </div>
   );
@@ -258,6 +632,8 @@ function EventDetail({ event, tab, setTab }: { event: EventDef; tab: string; set
 function EventDetailHeader({ event }: { event: EventDef }) {
   const { t } = useApp();
   const isError = event.kind === "error";
+  // Live counters from EventInstance (replaces previous mock numbers).
+  const stats = useEventStats(event.name);
   return (
     <div className="bg-surface border-b border-line" style={{ padding: "16px 22px" }}>
       <div className="flex items-center gap-2 mb-2">
@@ -277,25 +653,120 @@ function EventDetailHeader({ event }: { event: EventDef }) {
           </div>
           <div className="text-ink-3 text-[12px] mt-0.5">{event.desc}</div>
         </div>
-        <Badge variant="info">v2 · schema</Badge>
-        <Badge variant={event.err > 0 ? "warn" : "ok"} dot>
-          {event.err > 0 ? `${event.err} err / 24h` : "healthy · 24h"}
-        </Badge>
+        {event.source === "neo4j" ? (
+          <span title={buildSourceTooltip(event)}>
+            <Badge variant={event.schemaSource === "builtin" ? "warn" : "info"} dot>
+              {event.schemaSource === "builtin" ? "Neo4j (元数据)" : "Neo4j"}
+              {event.activeVersions && event.activeVersions.length > 0 ? ` · v${event.activeVersions[0]}` : ""}
+              {event.schemaSource === "builtin" ? " *" : ""}
+            </Badge>
+          </span>
+        ) : event.source === "hardcoded" ? (
+          <span title="本地兜底 — 上线前请确保 Neo4j 同步成功">
+            <Badge variant="warn" dot>本地兜底</Badge>
+          </span>
+        ) : (
+          <Badge variant="info">v2 · schema</Badge>
+        )}
+        {stats ? (
+          <Badge variant={stats.errCount24h > 0 ? "warn" : "ok"} dot>
+            {stats.errCount24h > 0
+              ? `${stats.errCount24h} err / 24h`
+              : stats.rate24h > 0
+                ? `healthy · 24h (${stats.rate24h})`
+                : "healthy · 24h"}
+          </Badge>
+        ) : (
+          <Badge variant="default">…</Badge>
+        )}
       </div>
 
       <div className="flex gap-4.5 mt-3" style={{ gap: 18 }}>
-        <HeaderStat label="24h 发布" value={event.rate.toLocaleString()} />
-        <HeaderStat label="P95 投递" value="84ms" tone="ok" />
+        <HeaderStat
+          label="24h 发布"
+          value={stats ? stats.rate24h.toLocaleString() : "…"}
+          tone={stats && stats.rate24h > 0 ? "ok" : undefined}
+        />
+        <HeaderStat
+          label="1h 速率"
+          value={stats ? `${stats.rateLastHour}/h` : "…"}
+          muted={!stats || stats.rateLastHour === 0}
+        />
+        <HeaderStat
+          label="错误率 24h"
+          value={
+            stats && stats.rate24h > 0
+              ? `${(stats.errRate24h * 100).toFixed(1)}%`
+              : "—"
+          }
+          muted={!stats || stats.errCount24h === 0}
+        />
         <HeaderStat label={t("em_subscribers")} value={event.subscribers.length.toString()} />
-        <HeaderStat label={t("em_retention")} value="90d" />
-        <HeaderStat label={t("em_persistence")} value="PostgreSQL + S3" muted />
+        <HeaderStat label={t("em_publishers")} value={event.publishers.length.toString()} />
+        {event.activeVersions && event.activeVersions.length > 0 && (
+          <HeaderStat
+            label="活跃版本"
+            value={event.activeVersions.join(", ")}
+            muted={event.activeVersions.length === 1}
+          />
+        )}
+        {event.syncedAt && (
+          <HeaderStat
+            label="Neo4j 同步"
+            value={relativeTime(event.syncedAt)}
+            muted
+          />
+        )}
         <div className="flex-1" />
-        <Btn size="sm"><Ic.play /> {t("em_replay")}</Btn>
-        <Btn size="sm"><Ic.pause /> {t("em_pause")}</Btn>
-        <Btn size="sm" variant="ghost"><Ic.dots /></Btn>
       </div>
     </div>
   );
+}
+
+// Detailed tooltip for the Neo4j badge — explains the (sometimes mixed)
+// provenance: metadata may come from Neo4j while validator falls back to
+// builtin if the JSON-Schema couldn't be converted to Zod.
+function buildSourceTooltip(event: EventDef): string {
+  const lines: string[] = [];
+  lines.push(
+    `元数据 (publishers / subscribers / desc): ${
+      event.source === "neo4j" ? "Neo4j" : "本地"
+    }`,
+  );
+  lines.push(
+    `校验器 (Zod schema): ${
+      event.schemaSource === "neo4j"
+        ? "Neo4j JSON Schema → Zod"
+        : event.schemaSource === "builtin"
+          ? "builtin (Neo4j schema 转换失败或缺失)"
+          : "未注册"
+    }`,
+  );
+  if (event.versionSources?.length) {
+    lines.push(
+      "版本来源: " +
+        event.versionSources
+          .map(
+            (v) =>
+              `${v.version}=${v.source}${v.fallbackReason ? `(${v.fallbackReason})` : ""}`,
+          )
+          .join(", "),
+    );
+  }
+  if (event.syncedAt) {
+    lines.push(
+      `Neo4j 同步: ${new Date(event.syncedAt).toLocaleString(undefined, { hour12: false })}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s 前`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m 前`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h 前`;
+  return `${Math.floor(ms / 86_400_000)}d 前`;
 }
 
 function HeaderStat({ label, value, tone, muted }: { label: string; value: string; tone?: "ok"; muted?: boolean }) {
@@ -315,14 +786,16 @@ function HeaderStat({ label, value, tone, muted }: { label: string; value: strin
 
 function EventDetailTabs({ tab, setTab }: { tab: string; setTab: (t: string) => void }) {
   const { t } = useApp();
+  // Collapsed from 7 → 4 (UX review). Dropped:
+  //   "runs"     — duplicates the upcoming top-level "实例" sub-tab
+  //   "history"  — definition history (AO doesn't edit definitions; Q1 decision)
+  //   "logs"     — vague label; covered by Inngest dashboard or upcoming trail page
+  //   "firehose" — duplicates the right-rail live stream
   const tabs = [
     { id: "overview", label: t("em_tab_overview") },
     { id: "schema", label: t("em_tab_schema") },
     { id: "subs", label: t("em_tab_subs") },
-    { id: "runs", label: t("em_tab_runs") },
-    { id: "history", label: t("em_tab_history") },
-    { id: "logs", label: t("em_tab_logs") },
-    { id: "firehose", label: t("evt_tab_firehose") },
+    { id: "instances", label: t("em_tab_instances") },
   ];
   return (
     <div className="border-b border-line bg-surface flex gap-0.5" style={{ padding: "0 14px" }}>
@@ -362,6 +835,11 @@ function DetailCard({ title, count, children, span }: { title: string; count?: n
 
 function TabOverview({ event }: { event: EventDef }) {
   const { t } = useApp();
+  const stats = useEventStats(event.name);
+  return <TabOverviewInner event={event} stats={stats} t={t} />;
+}
+
+function TabOverviewInner({ event, stats, t }: { event: EventDef; stats: EventStats | null; t: (k: string) => string }) {
   const emitsEvents = event.emits || [];
   return (
     <div className="grid gap-4.5" style={{ padding: 22, gridTemplateColumns: "1fr 1fr", gap: 18 }}>
@@ -376,69 +854,137 @@ function TabOverview({ event }: { event: EventDef }) {
         ))}
       </DetailCard>
 
-      <DetailCard title={t("em_source_action")} span>
-        <EMKV rows={[
-          ["source.action", "analyzeRequirement"],
-          ["triggered_by", t("actor_agent") + " · ReqAnalyzer"],
-          ["idempotency_key", "req_id + analysis_nonce"],
-          ["dedupe_window", "60s"],
-        ]} />
+      <DetailCard title="实例分布 · 24h" span>
+        {stats ? (
+          stats.rate24h === 0 ? (
+            <div className="text-ink-3 text-[12.5px] p-2">— 24h 内无实例 —</div>
+          ) : (
+            <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+              <DistroCell label="accepted" value={stats.acceptedCount24h} total={stats.rate24h} tone="ok" />
+              <DistroCell label="schema 失败" value={stats.rejectedSchemaCount24h} total={stats.rate24h} tone="err" />
+              <DistroCell label="filter 拒绝" value={stats.rejectedFilterCount24h} total={stats.rate24h} tone="warn" />
+              <DistroCell label="duplicate" value={stats.duplicateCount24h} total={stats.rate24h} tone="info" />
+            </div>
+          )
+        ) : (
+          <div className="text-ink-3 text-[12.5px] p-2">加载中…</div>
+        )}
       </DetailCard>
 
-      <DetailCard title={t("em_triggers_workflow") + " · 下游"} count={emitsEvents.length} span>
+      <DetailCard title={t("em_triggers_workflow") + " · 下游 (24h)"} count={stats?.downstreamEmits24h.length ?? emitsEvents.length} span>
         <div className="flex flex-col gap-2">
-          {emitsEvents.length === 0 && <div className="text-ink-3 text-[12.5px] p-2">— 终端事件 · 无下游 —</div>}
-          {emitsEvents.map((ev, i) => {
-            const target = EVENT_CATALOG.find((x) => x.name === ev);
-            return (
-              <div
-                key={i}
-                className="flex items-center gap-2.5 rounded-sm bg-panel border border-line"
-                style={{ padding: "8px 10px" }}
-              >
-                <span className="mono text-[10.5px] text-ink-4">emit →</span>
-                <span
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ background: kindDot(target?.kind || "domain") }}
-                />
-                <span className="mono text-[11.5px] font-semibold">{ev}</span>
-                <div className="flex-1" />
-                <span className="mono text-[10.5px] text-ink-4">{target ? `${target.rate}/h` : "—"}</span>
+          {stats && stats.downstreamEmits24h.length > 0 ? (
+            stats.downstreamEmits24h.map((row) => {
+              const target = EVENT_CATALOG.find((x) => x.name === row.name);
+              return (
+                <a
+                  key={row.name}
+                  href={`/events?event=${encodeURIComponent(row.name)}`}
+                  className="flex items-center gap-2.5 rounded-sm bg-panel border border-line no-underline hover:border-line-strong"
+                  style={{ padding: "8px 10px" }}
+                >
+                  <span className="mono text-[10.5px] text-ink-4">emit →</span>
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: kindDot(target?.kind || "domain") }}
+                  />
+                  <span className="mono text-[11.5px] font-semibold text-ink-1">{row.name}</span>
+                  <div className="flex-1" />
+                  <span className="mono text-[10.5px] text-ink-2">{row.count.toLocaleString()} 次</span>
+                </a>
+              );
+            })
+          ) : emitsEvents.length === 0 ? (
+            <div className="text-ink-3 text-[12.5px] p-2">— 终端事件 · 无下游 —</div>
+          ) : (
+            // No EventInstance data yet — show declared (not actual) downstream events
+            // from the registry as a hint, with a clear caveat.
+            <>
+              <div className="text-ink-3 text-[10.5px] mb-1">
+                注：尚无实例数据，以下为注册表声明的下游事件（非实际计数）
               </div>
-            );
-          })}
+              {emitsEvents.map((ev, i) => {
+                const target = EVENT_CATALOG.find((x) => x.name === ev);
+                return (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2.5 rounded-sm bg-panel border border-line"
+                    style={{ padding: "8px 10px" }}
+                  >
+                    <span className="mono text-[10.5px] text-ink-4">declared →</span>
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ background: kindDot(target?.kind || "domain") }}
+                    />
+                    <span className="mono text-[11.5px] font-semibold">{ev}</span>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       </DetailCard>
 
-      <DetailCard title={t("em_mutations")} count={event.mutations.length} span>
-        {event.mutations.length === 0 && <div className="text-ink-3 text-[12.5px] p-2">— 该事件不修改状态 —</div>}
-        <div className="flex flex-wrap gap-1.5">
-          {event.mutations.map((m, i) => (
-            <Badge key={i} style={{ background: "var(--c-panel)", border: "1px solid var(--c-line)" }}>
-              <Ic.db /> {m}
-            </Badge>
-          ))}
-        </div>
-      </DetailCard>
+      {event.mutations.length > 0 && (
+        <DetailCard title={t("em_mutations")} count={event.mutations.length} span>
+          <div className="flex flex-wrap gap-1.5">
+            {event.mutations.map((m, i) => (
+              <Badge key={i} style={{ background: "var(--c-panel)", border: "1px solid var(--c-line)" }}>
+                <Ic.db /> {m}
+              </Badge>
+            ))}
+          </div>
+        </DetailCard>
+      )}
 
       <DetailCard title={t("em_delivery") + " · Inngest"}>
         <EMKV rows={[
-          ["delivery", "at-least-once"],
-          ["concurrency", "25 / function"],
-          ["rate_limit", "500/min · per job_id"],
-          ["retries", "5 · exp. backoff 30s→30m"],
-          ["timeout", "30s"],
+          ["delivery", "at-least-once (Inngest)"],
+          ["idempotency", "external_event_id + name"],
+          ["dedup", "EventInstance.external_event_id (唯一)"],
+          ["retries", "function-level (Inngest 配置)"],
+          ["bus", process.env.NEXT_PUBLIC_INNGEST_BASE_URL ?? "http://localhost:8288"],
         ]} />
       </DetailCard>
       <DetailCard title={t("em_persistence")}>
         <EMKV rows={[
-          ["log_store", "PostgreSQL · events_log"],
-          ["payload_blob", "S3 · ao-events/2025-…"],
-          ["retention", "90 天 · WORM · 合规"],
-          ["index", "name + job_requisition_id + ts"],
-          ["GDPR", "PII 字段加密 · 字段级"],
+          ["audit", "AuditLog (Prisma) · trace_id 索引"],
+          ["instance", "EventInstance (Prisma) · name+ts 索引"],
+          ["payload_full", "Inngest SQLite (容器持久化)"],
+          ["retention", "180 天 (spec v2 §16 Q8)"],
         ]} />
       </DetailCard>
+    </div>
+  );
+}
+
+function DistroCell({
+  label,
+  value,
+  total,
+  tone,
+}: {
+  label: string;
+  value: number;
+  total: number;
+  tone: "ok" | "warn" | "err" | "info";
+}) {
+  const pct = total > 0 ? (value / total) * 100 : 0;
+  const color =
+    tone === "ok"
+      ? "var(--c-ok)"
+      : tone === "warn"
+        ? "var(--c-warn)"
+        : tone === "err"
+          ? "var(--c-err)"
+          : "var(--c-info)";
+  return (
+    <div>
+      <div className="hint">{label}</div>
+      <div className="text-[16px] font-semibold tracking-tight tabular-nums" style={{ color }}>
+        {value.toLocaleString()}
+      </div>
+      <div className="mono text-[10.5px] text-ink-4">{pct.toFixed(1)}%</div>
     </div>
   );
 }
@@ -477,416 +1023,513 @@ function EMKV({ rows }: { rows: [string, string][] }) {
   );
 }
 
+// Payload tab — three views over the real Neo4j EventField list:
+//   1. fields  — table of {name, RAAS type, required, target object}
+//   2. schema  — JSON Schema generated by the sync worker (used by em.publish)
+//   3. sample  — synthesized example payload generated from the field types
+//
+// "中/EN" toggles the ORIGINAL field name display style:
+//   - 中: shows business semantics inline (RAAS type translated, target object
+//     in parentheses)
+//   - EN: shows raw protocol-level identifiers (snake_case fields, RAAS types
+//     verbatim) — what an agent / API integrator wants to see
 function TabSchema({ event }: { event: EventDef }) {
-  const { t } = useApp();
+  const { t, lang } = useApp();
+  const [view, setView] = React.useState<"fields" | "schema" | "sample">("fields");
 
-  const sampleFor = (key: string, type: string) => {
-    if (key.includes("_id")) return '"req_2041"';
-    if (key.includes("_url")) return '"s3://ao-events/resumes/8821.pdf"';
-    if (key === "confidence_rating" || key === "matching_score") return "0.83";
-    if (key === "complexity_score") return "0.74";
-    if (key === "extracted_skills") return '["Java","Spring Cloud","Kafka","MySQL"]';
-    if (key === "analysis_duration_ms") return "1820";
-    if (type === "Boolean") return "true";
-    if (type === "Integer") return "42";
-    if (type === "Float") return "0.92";
-    if (type.startsWith("List")) return '["…"]';
-    if (type === "Array") return "[]";
-    if (type === "Object") return "{}";
-    if (type === "Enum") return '"HIGH"';
-    if (type === "Date") return '"2025-02-10"';
-    return '"…"';
-  };
-  const jsonType = (tp: string) => {
-    if (tp === "Integer" || tp === "Float") return "number";
-    if (tp === "Boolean") return "boolean";
-    if (tp === "Array" || tp.startsWith("List")) return "array";
-    if (tp === "Object") return "object";
-    return "string";
-  };
+  // Prefer Neo4j-sourced fields (real); fallback to legacy hardcoded data.
+  const realFields = event.fields ?? [];
+  const usingReal = realFields.length > 0;
+  const legacyFields: typeof realFields =
+    event.data?.map(([n, ty], i) => ({
+      name: n,
+      type: ty,
+      required: i < 2,
+      position: i,
+      targetObject: null,
+    })) ?? [];
+  const fields = usingReal ? realFields : legacyFields;
 
   return (
-    <div className="grid items-start gap-4.5" style={{ padding: 22, gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-      <div>
-        <DetailCard title="event_data · payload fields" count={event.data.length}>
-          <div className="grid" style={{ gridTemplateColumns: "1fr auto" }}>
-            <div
-              className="mono text-[10.5px] text-ink-4 tracking-[0.04em] uppercase border-b border-line"
-              style={{ padding: "4px 6px" }}
+    <div style={{ padding: 22 }}>
+      <div className="flex items-center gap-3 mb-3">
+        <div className="text-[12px] font-semibold tracking-tight text-ink-1 flex-1">
+          Payload schema · {event.name}
+          {usingReal && (
+            <span className="mono text-[10.5px] text-ink-3 ml-2">
+              {fields.length} fields · from Neo4j
+            </span>
+          )}
+        </div>
+        {/* view toggle */}
+        <div className="flex items-center h-6 p-[2px] bg-panel border border-line rounded-md">
+          {([
+            { id: "fields", label: lang === "zh" ? "字段表" : "Fields" },
+            { id: "schema", label: "JSON" },
+            { id: "sample", label: lang === "zh" ? "示例" : "Sample" },
+          ] as const).map((v) => (
+            <button
+              key={v.id}
+              onClick={() => setView(v.id)}
+              className="h-5 px-2 rounded-sm text-[11px] cursor-pointer border-0"
+              style={{
+                background: view === v.id ? "var(--c-surface)" : "transparent",
+                color: view === v.id ? "var(--c-ink-1)" : "var(--c-ink-3)",
+                fontWeight: view === v.id ? 600 : 500,
+                boxShadow: view === v.id ? "var(--sh-1)" : undefined,
+              }}
             >
-              field
-            </div>
-            <div
-              className="mono text-[10.5px] text-ink-4 tracking-[0.04em] uppercase border-b border-line text-right"
-              style={{ padding: "4px 6px" }}
-            >
-              type
-            </div>
-            {event.data.map(([k, tp], i) => (
-              <React.Fragment key={i}>
-                <div
-                  className="mono text-[11.5px]"
-                  style={{
-                    padding: "8px 6px",
-                    borderBottom: i === event.data.length - 1 ? 0 : "1px dashed var(--c-line)",
-                  }}
-                >
-                  {k}
-                </div>
-                <div
-                  className="text-right"
-                  style={{
-                    padding: "8px 6px",
-                    borderBottom: i === event.data.length - 1 ? 0 : "1px dashed var(--c-line)",
-                  }}
-                >
-                  <span
-                    className="mono text-[10.5px]"
-                    style={{
-                      color: "var(--c-info)",
-                      background: "var(--c-info-bg)",
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      border: "1px solid color-mix(in oklab, var(--c-info) 20%, transparent)",
-                    }}
-                  >
-                    {tp}
-                  </span>
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
-        </DetailCard>
-
-        <div style={{ height: 14 }} />
-
-        <DetailCard title={t("em_mutations") + " · state_mutations"} count={event.mutations.length}>
-          {event.mutations.length === 0 && <div className="text-ink-3 text-[12.5px] p-1.5">无状态变更 · pure signal event</div>}
-          {event.mutations.map((m, i) => (
-            <div
-              key={i}
-              className="rounded-sm mb-1.5 bg-panel border border-line flex items-center gap-2"
-              style={{ padding: "8px 10px" }}
-            >
-              <Ic.db />
-              <span className="mono text-[12px] font-semibold">{m}</span>
-              <Badge variant="info" className="ml-auto">CREATE_OR_MODIFY</Badge>
-            </div>
+              {v.label}
+            </button>
           ))}
-        </DetailCard>
+        </div>
       </div>
 
-      <div>
-        <DetailCard title="Sample payload · JSON">
-          <pre
-            className="m-0 mono text-[11px] rounded-md overflow-auto"
-            style={{
-              padding: 14,
-              background: "oklch(0.22 0.01 260)",
-              color: "oklch(0.92 0.01 260)",
-              border: "1px solid oklch(0.28 0.01 260)",
-              lineHeight: 1.55,
-            }}
-          >
-{`{
-  "name": "${event.name}",
-  "ts":   "2025-01-14T14:06:04.812Z",
-  "id":   "evt_01HQ9K7MZE3XFN2P8T5RA6WQ0V",
-  "data": {
-${event.data.map(([k, tp]) => `    "${k}": ${sampleFor(k, tp)}`).join(",\n")}
-  },
-  "user": { "hsm_id": "u_482", "tenant": "icbc" },
-  "meta": {
-    "source":  "${event.publishers[0] || "system"}",
-    "trace_id":"tr_7b3c29e1d2",
-    "schema":  "v2"
-  }
-}`}
-          </pre>
-        </DetailCard>
-
-        <div style={{ height: 14 }} />
-
-        <DetailCard title="JSON Schema · validation">
-          <pre
-            className="m-0 mono text-[10.5px] rounded-md overflow-auto bg-panel text-ink-2"
-            style={{
-              padding: 14,
-              border: "1px solid var(--c-line)",
-              lineHeight: 1.5,
-            }}
-          >
-{`{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title":   "${event.name}",
-  "type":    "object",
-  "required":[${event.data.slice(0, 2).map(([k]) => `"${k}"`).join(",")}],
-  "properties": {
-${event.data.map(([k, tp]) => `    "${k}": { "type": "${jsonType(tp)}" }`).join(",\n")}
-  },
-  "additionalProperties": false
-}`}
-          </pre>
-        </DetailCard>
-      </div>
-    </div>
-  );
-}
-
-function TabSubscribers({ event }: { event: EventDef }) {
-  const allSubs = event.subscribers.map((s, i) => ({
-    fn: s,
-    match: "event.name == '" + event.name + "'" + (i === 0 ? "" : " && event.data.is_urgent == true"),
-    concurrency: [25, 12, 8, 4, 2][i] ?? 2,
-    runs24h: Math.max(0, event.rate - i * Math.round(event.rate * 0.15)),
-    success: 98.2 + (i % 3) * 0.4,
-    p95: 120 + i * 80,
-    status: i === 0 ? "active" : i === 1 ? "active" : i === 2 ? "active" : "paused",
-  }));
-  return (
-    <div style={{ padding: 22 }}>
-      <DetailCard title={"Inngest functions · 订阅 " + event.name} count={allSubs.length}>
-        <div>
-          <div
-            className="grid items-center text-[10.5px] text-ink-4 tracking-[0.06em] uppercase font-semibold border-b border-line"
-            style={{
-              gridTemplateColumns: "1.4fr 1.6fr repeat(4, 0.8fr)",
-              padding: "6px 8px",
-            }}
-          >
-            <div>function</div><div>match · if</div>
-            <div className="text-right">conc.</div>
-            <div className="text-right">runs 24h</div>
-            <div className="text-right">success</div>
-            <div className="text-right">P95</div>
-          </div>
-          {allSubs.map((s, i) => (
-            <div
-              key={i}
-              className="grid items-center tabular-nums text-[12px]"
-              style={{
-                gridTemplateColumns: "1.4fr 1.6fr repeat(4, 0.8fr)",
-                padding: "10px 8px",
-                borderBottom: i === allSubs.length - 1 ? 0 : "1px dashed var(--c-line)",
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <StatusDot kind={s.status === "active" ? "ok" : "paused"} />
-                <span className="mono text-[11.5px] font-semibold">{s.fn}</span>
-                {s.status === "paused" && <Badge>paused</Badge>}
-              </div>
-              <div className="mono text-[10.5px] text-ink-3 overflow-hidden text-ellipsis whitespace-nowrap">{s.match}</div>
-              <div className="mono text-right text-[11px]">{s.concurrency}</div>
-              <div className="mono text-right text-[11px]">{s.runs24h.toLocaleString()}</div>
-              <div
-                className="mono text-right text-[11px]"
-                style={{ color: s.success >= 99 ? "var(--c-ok)" : "var(--c-ink-1)" }}
-              >
-                {s.success.toFixed(1)}%
-              </div>
-              <div className="mono text-right text-[11px]">{s.p95}ms</div>
-            </div>
-          ))}
-        </div>
-      </DetailCard>
-    </div>
-  );
-}
-
-function TabRuns({ event }: { event: EventDef }) {
-  const runs = [
-    { id: "run_01HQ…7MZE", fn: event.subscribers[0], state: "completed", took: "1.82s", started: "14:06:04", steps: 7, attempts: 1 },
-    { id: "run_01HQ…7MZF", fn: event.subscribers[0], state: "completed", took: "2.14s", started: "14:06:02", steps: 7, attempts: 1 },
-    { id: "run_01HQ…7MZG", fn: event.subscribers[1] || event.subscribers[0], state: "running", took: "0:01:04", started: "14:06:01", steps: 4, attempts: 1 },
-    { id: "run_01HQ…7MZH", fn: event.subscribers[0], state: "failed", took: "0.92s", started: "14:05:58", steps: 3, attempts: 2, error: "TOOL_TIMEOUT · llm.extract" },
-    { id: "run_01HQ…7MZJ", fn: event.subscribers[0], state: "completed", took: "1.68s", started: "14:05:52", steps: 7, attempts: 1 },
-    { id: "run_01HQ…7MZK", fn: event.subscribers[0], state: "waiting", took: "—", started: "14:05:44", steps: 2, attempts: 1, waitOn: "CLARIFICATION_RETRY" },
-  ] as { id: string; fn: string; state: string; took: string; started: string; steps: number; attempts: number; error?: string; waitOn?: string }[];
-
-  const stateDot: Record<string, string> = {
-    completed: "var(--c-ok)",
-    running: "var(--c-info)",
-    failed: "var(--c-err)",
-    waiting: "oklch(0.5 0.14 75)",
-    paused: "var(--c-ink-3)",
-  };
-
-  return (
-    <div style={{ padding: 22 }}>
-      <DetailCard title="Function runs · 最近 10 分钟" count={runs.length}>
-        <div>
-          <div
-            className="grid items-center text-[10.5px] text-ink-4 tracking-[0.06em] uppercase font-semibold border-b border-line"
-            style={{
-              gridTemplateColumns: "1.4fr 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr 1.4fr",
-              padding: "6px 8px",
-            }}
-          >
-            <div>run</div><div>function</div><div>state</div>
-            <div className="text-right">took</div>
-            <div className="text-right">started</div>
-            <div className="text-right">steps</div>
-            <div>detail</div>
-          </div>
-          {runs.map((r, i) => (
-            <div
-              key={i}
-              className="grid items-center tabular-nums text-[11.5px]"
-              style={{
-                gridTemplateColumns: "1.4fr 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr 1.4fr",
-                padding: "10px 8px",
-                borderBottom: i === runs.length - 1 ? 0 : "1px dashed var(--c-line)",
-              }}
-            >
-              <div className="mono text-[10.5px] text-ink-3">{r.id}</div>
-              <div className="mono text-[11px] font-medium">{r.fn}</div>
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="w-[7px] h-[7px] rounded-full"
-                  style={{
-                    background: stateDot[r.state],
-                    boxShadow: `0 0 0 3px color-mix(in oklab, ${stateDot[r.state]} 18%, transparent)`,
-                  }}
-                />
-                <span className="mono text-[10.5px]">{r.state}</span>
-                {r.attempts > 1 && <span className="mono text-[10px] text-[color:var(--c-err)]">×{r.attempts}</span>}
-              </div>
-              <div className="mono text-right">{r.took}</div>
-              <div className="mono text-right text-ink-3">{r.started}</div>
-              <div className="mono text-right">{r.steps}</div>
-              <div
-                className="mono text-[10.5px] overflow-hidden text-ellipsis whitespace-nowrap"
-                style={{ color: r.error ? "var(--c-err)" : "var(--c-ink-3)" }}
-              >
-                {r.error || (r.waitOn ? `⏸ wait for ${r.waitOn}` : "—")}
-              </div>
-            </div>
-          ))}
-        </div>
-      </DetailCard>
-    </div>
-  );
-}
-
-function TabHistory({ event }: { event: EventDef }) {
-  const { t } = useApp();
-  const bars = Array.from({ length: 24 }, (_, i) => {
-    const base = event.rate / 24;
-    const noise = Math.sin(i * 0.8) * 0.45 + Math.cos(i * 1.3) * 0.25;
-    return Math.max(0, Math.round(base * (1 + noise)));
-  });
-  const errBars = bars.map((v) => Math.round(v * 0.004 * (event.err / Math.max(1, event.rate / 1000))));
-  const maxV = Math.max(...bars, 1);
-  return (
-    <div style={{ padding: 22 }}>
-      <DetailCard title="过去 24 小时 · 事件速率" count={event.rate}>
-        <div className="flex items-end gap-[3px] h-[140px]" style={{ padding: "6px 2px" }}>
-          {bars.map((v, i) => (
-            <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
-              <div
-                className="w-full rounded-t-[3px] relative"
-                style={{
-                  height: `${(v / maxV) * 110}px`,
-                  background: "color-mix(in oklab, var(--c-accent) 65%, transparent)",
-                }}
-              >
-                {errBars[i] > 0 && (
-                  <div
-                    className="absolute bottom-0 left-0 right-0 rounded-t-[3px] bg-[color:var(--c-err)]"
-                    style={{ height: `${Math.min(100, (errBars[i] / v) * 100)}%` }}
-                  />
-                )}
-              </div>
-              <span className="mono text-[8.5px] text-ink-4">{i}</span>
-            </div>
-          ))}
-        </div>
-      </DetailCard>
-
-      <div style={{ height: 14 }} />
-
-      <DetailCard title={t("em_versions") + " · schema evolution"}>
-        <div>
-          {[
-            { ver: "v2", date: "2025-01-08", by: "HSM·treasury", note: "add `confidence_rating` · breaking" },
-            { ver: "v1.4", date: "2024-11-22", by: "AI·schema-bot", note: "rename: `match_score`→`confidence_rating`" },
-            { ver: "v1.3", date: "2024-10-05", by: "HSM·ops", note: "add `analysis_duration_ms`" },
-            { ver: "v1.0", date: "2024-07-01", by: "初版", note: "initial" },
-          ].map((v, i) => (
-            <div
-              key={i}
-              className="grid text-[12px]"
-              style={{
-                gridTemplateColumns: "60px 100px 140px 1fr",
-                gap: 10,
-                padding: "8px 6px",
-                borderBottom: i === 3 ? 0 : "1px dashed var(--c-line)",
-              }}
-            >
-              <span
-                className="mono text-[11px] font-semibold"
-                style={{ color: i === 0 ? "var(--c-accent)" : "var(--c-ink-3)" }}
-              >
-                {v.ver}
-              </span>
-              <span className="mono text-[10.5px] text-ink-4">{v.date}</span>
-              <span className="text-[11.5px]">{v.by}</span>
-              <span className="mono text-[10.5px] text-ink-3">{v.note}</span>
-            </div>
-          ))}
-        </div>
-      </DetailCard>
-    </div>
-  );
-}
-
-function TabLogs({ event }: { event: EventDef }) {
-  const logs = [
-    { t: "14:06:04.812", lv: "info", msg: `event.published ${event.name} · payload=1.4kb` },
-    { t: "14:06:04.814", lv: "info", msg: `→ dispatch to ${event.subscribers[0]} (conc 3/25)` },
-    { t: "14:06:04.816", lv: "info", msg: `→ persisted · S3 key ao-events/2025-01-14/${event.name.toLowerCase()}/01HQ7MZE` },
-    { t: "14:06:04.892", lv: "info", msg: `${event.subscribers[0]} step.run resolved in 68ms` },
-    { t: "14:06:04.910", lv: "warn", msg: `replay triggered for run_01HQ…7MZH · attempt 2` },
-    { t: "14:06:05.124", lv: "info", msg: `schema validated ok · v2` },
-    { t: "14:06:05.288", lv: "error", msg: `llm.extract timeout 30s · run_01HQ…7MZH FAILED` },
-    { t: "14:06:05.290", lv: "info", msg: `deadletter · 1 run → dlq.${event.name.toLowerCase()}` },
-    { t: "14:06:05.431", lv: "info", msg: `consumer lag = 0ms · P95 = 84ms` },
-    { t: "14:06:05.612", lv: "debug", msg: `event.data.job_requisition_id=JD-2041 tenant=icbc` },
-    { t: "14:06:05.842", lv: "info", msg: `audit trail committed · user=u_482 · tenant=icbc` },
-  ];
-  const lvCol: Record<string, string> = {
-    info: "var(--c-ink-2)",
-    warn: "oklch(0.5 0.14 75)",
-    error: "var(--c-err)",
-    debug: "var(--c-ink-4)",
-  };
-  return (
-    <div style={{ padding: 22 }}>
-      <DetailCard title="Runtime logs · structured · tail">
+      {!usingReal && (
         <div
-          className="mono text-[11px] rounded-md overflow-auto max-h-[360px]"
+          className="text-[11.5px] text-ink-3 mb-3"
           style={{
-            background: "oklch(0.22 0.01 260)",
-            border: "1px solid oklch(0.28 0.01 260)",
-            padding: "10px 12px",
-            lineHeight: 1.55,
-            color: "oklch(0.85 0.01 260)",
+            padding: "8px 10px",
+            background: "color-mix(in oklab, var(--c-warn) 8%, transparent)",
+            border: "1px solid color-mix(in oklab, var(--c-warn) 25%, var(--c-line))",
+            borderRadius: 4,
           }}
         >
-          {logs.map((l, i) => (
-            <div key={i} className="flex gap-2.5">
-              <span style={{ color: "oklch(0.6 0.02 260)" }}>{l.t}</span>
-              <span
-                className="uppercase"
-                style={{ width: 44, color: lvCol[l.lv], fontSize: 10 }}
-              >
-                {l.lv}
-              </span>
-              <span>{l.msg}</span>
-            </div>
-          ))}
+          {lang === "zh"
+            ? "本地兜底字段（来自 lib/events-catalog.ts）。等 Neo4j 同步成功后会自动替换为真字段。"
+            : "Local fallback fields (lib/events-catalog.ts). Will switch to real ones after Neo4j sync."}
         </div>
+      )}
+
+      {view === "fields" && <FieldsTable fields={fields} labelLang={lang} />}
+      {view === "schema" && <SchemaJsonView event={event} labelLang={lang} />}
+      {view === "sample" && <SamplePayloadView event={event} fields={fields} labelLang={lang} />}
+    </div>
+  );
+}
+
+function FieldsTable({
+  fields,
+  labelLang,
+}: {
+  fields: NonNullable<EventDef["fields"]>;
+  labelLang: "zh" | "en";
+}) {
+  if (fields.length === 0) {
+    return (
+      <EmptyState
+        icon={<Ic.book />}
+        title={labelLang === "zh" ? "无声明字段" : "No declared fields"}
+        hint={
+          labelLang === "zh"
+            ? "Neo4j 上此事件未挂载 EventField 节点；payload 视为任意 object。"
+            : "No EventField nodes attached to this Event in Neo4j; payload accepts any object."
+        }
+      />
+    );
+  }
+  return (
+    <table className="tbl">
+      <thead>
+        <tr>
+          <th style={{ width: 60 }}>{labelLang === "zh" ? "顺序" : "pos"}</th>
+          <th style={{ width: 220 }}>{labelLang === "zh" ? "字段名" : "field"}</th>
+          <th style={{ width: 180 }}>{labelLang === "zh" ? "类型" : "type"}</th>
+          <th style={{ width: 60 }}>{labelLang === "zh" ? "必填" : "req"}</th>
+          <th>{labelLang === "zh" ? "关联实体" : "target object"}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {fields.map((f) => (
+          <tr key={f.name}>
+            <td className="mono text-[10.5px] text-ink-3">{f.position}</td>
+            <td className="mono text-[11.5px] text-ink-1">{f.name}</td>
+            <td>
+              <FieldTypeBadge type={f.type} labelLang={labelLang} />
+            </td>
+            <td>
+              {f.required ? (
+                <Badge variant="warn">{labelLang === "zh" ? "必填" : "required"}</Badge>
+              ) : (
+                <span className="text-ink-4 mono text-[10.5px]">—</span>
+              )}
+            </td>
+            <td>
+              {f.targetObject ? (
+                <span className="mono text-[11px] text-ink-2">{f.targetObject}</span>
+              ) : (
+                <span className="text-ink-4 mono text-[10.5px]">—</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const RAAS_TYPE_ZH: Record<string, string> = {
+  String: "字符串",
+  Boolean: "布尔",
+  Integer: "整数",
+  Long: "长整数",
+  Float: "浮点",
+  Double: "双精度",
+  Date: "日期",
+  DateTime: "日期时间",
+  Object: "对象",
+  Json: "JSON",
+};
+
+function FieldTypeBadge({ type, labelLang }: { type: string; labelLang: "zh" | "en" }) {
+  // List<X> → render with brackets
+  const list = type.match(/^List<(.+)>$/i);
+  if (list) {
+    return (
+      <span className="mono text-[10.5px]">
+        <span style={{ color: "var(--c-info)" }}>List</span>
+        <span className="text-ink-3">&lt;</span>
+        <FieldTypeBadge type={list[1]} labelLang={labelLang} />
+        <span className="text-ink-3">&gt;</span>
+      </span>
+    );
+  }
+  const isPrimitive = !!RAAS_TYPE_ZH[type];
+  const display = labelLang === "zh" && isPrimitive ? `${RAAS_TYPE_ZH[type]} (${type})` : type;
+  return (
+    <span
+      className="mono text-[10.5px]"
+      style={{
+        color: isPrimitive ? "var(--c-info)" : "var(--c-warn)",
+        background: isPrimitive ? "var(--c-info-bg)" : "var(--c-warn-bg)",
+        padding: "2px 6px",
+        borderRadius: 4,
+        border: `1px solid color-mix(in oklab, ${isPrimitive ? "var(--c-info)" : "var(--c-warn)"} 25%, transparent)`,
+      }}
+      title={!isPrimitive ? (labelLang === "zh" ? "业务实体类型 (允许任意对象)" : "Business entity type (any object)") : undefined}
+    >
+      {display}
+    </span>
+  );
+}
+
+function SchemaJsonView({ event, labelLang }: { event: EventDef; labelLang: "zh" | "en" }) {
+  // Reconstruct the original Neo4j payload structure — exactly as stored in
+  // the graph, no extra fields added. source_action may be absent for older
+  // events that don't carry it; state_mutations omitted when empty.
+  const raw: Record<string, unknown> = {};
+  if (event.sourceAction) raw.source_action = event.sourceAction;
+  raw.event_data = (event.fields ?? []).map((f) => ({
+    name: f.name,
+    type: f.type,
+    ...(f.required ? { required: true } : {}),
+    target_object: f.targetObject ?? null,
+  }));
+  if (event.mutationsV2?.length) {
+    raw.state_mutations = event.mutationsV2.map((m) => ({
+      target_object: m.targetObject,
+      mutation_type: m.mutationType,
+      impacted_properties: m.impactedProperties,
+    }));
+  }
+
+  return (
+    <div>
+      <div className="text-[11.5px] text-ink-3 mb-2">
+        {labelLang === "zh"
+          ? "从 Neo4j 同步的原始事件结构（source_action · event_data · state_mutations），字段不增不减。"
+          : "Raw event structure synced from Neo4j — source_action, event_data fields, state_mutations. Nothing added."}
+      </div>
+      <pre
+        className="m-0 mono text-[11px] rounded-md overflow-auto"
+        style={{
+          padding: 14,
+          background: "oklch(0.22 0.01 260)",
+          color: "oklch(0.92 0.01 260)",
+          border: "1px solid oklch(0.28 0.01 260)",
+          lineHeight: 1.55,
+          maxHeight: 520,
+        }}
+      >
+        {JSON.stringify(raw, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function SamplePayloadView({
+  event,
+  fields,
+  labelLang,
+}: {
+  event: EventDef;
+  fields: NonNullable<EventDef["fields"]>;
+  labelLang: "zh" | "en";
+}) {
+  const data: Record<string, unknown> = {};
+  for (const f of fields) data[f.name] = sampleValueFor(f.type);
+
+  const envelope = {
+    entity_type: event.name.split("_")[0]?.toLowerCase() ?? "event",
+    event_id: `evt_${Math.random().toString(16).slice(2, 14)}`,
+    payload: data,
+    trace: { trace_id: "trace_demo_001" },
+  };
+
+  return (
+    <div>
+      <div className="text-[11.5px] text-ink-3 mb-2">
+        {labelLang === "zh"
+          ? "按字段类型自动生成的示例 payload。可以直接 POST /api/em/publish 触发一次测试。"
+          : "Auto-generated example payload from field types. POST it to /api/em/publish for a smoke test."}
+      </div>
+      <pre
+        className="m-0 mono text-[11px] rounded-md overflow-auto"
+        style={{
+          padding: 14,
+          background: "oklch(0.22 0.01 260)",
+          color: "oklch(0.92 0.01 260)",
+          border: "1px solid oklch(0.28 0.01 260)",
+          lineHeight: 1.55,
+          maxHeight: 520,
+        }}
+      >
+        {JSON.stringify(envelope, null, 2)}
+      </pre>
+      <div
+        className="mt-3 mono text-[10.5px] text-ink-3 rounded-sm"
+        style={{
+          background: "var(--c-panel)",
+          border: "1px solid var(--c-line)",
+          padding: "8px 10px",
+        }}
+      >
+        {labelLang === "zh" ? "复制并测试：" : "Copy & test:"}
+        <pre
+          className="m-0 mono text-[10px] mt-1.5 overflow-auto"
+          style={{ color: "var(--c-ink-2)", padding: 0 }}
+        >
+{`curl -X POST http://localhost:3002/api/em/publish \\
+  -H 'Content-Type: application/json' \\
+  -d '${JSON.stringify({ name: event.name, source: "manual-test", externalEventId: `${event.name.toLowerCase()}-test-${Date.now()}`, data: envelope })}'`}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function sampleValueFor(type: string): unknown {
+  const list = type.match(/^List<(.+)>$/i);
+  if (list) return [sampleValueFor(list[1])];
+  switch (type.toLowerCase()) {
+    case "string":
+    case "text":
+    case "uuid":
+    case "id":
+      return "...";
+    case "integer":
+    case "int":
+    case "long":
+      return 0;
+    case "number":
+    case "float":
+    case "double":
+    case "decimal":
+      return 0;
+    case "boolean":
+    case "bool":
+      return false;
+    case "date":
+    case "datetime":
+    case "timestamp":
+      return new Date().toISOString();
+    case "object":
+    case "json":
+      return {};
+    default:
+      // Business entity — empty object
+      return {};
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Subscribers tab — real data from Neo4j (publishers + subscribers + mutations).
+// "Subscribers" in RAAS lingo overloads two concepts:
+//   1. agents/functions that consume this event (TRIGGERS edges in Neo4j;
+//      Inngest functions in our runtime)
+//   2. business entities the event mutates (EventMutation nodes)
+// We render both in clearly separated cards, not as one fake "Inngest fn" list.
+function TabSubscribers({ event }: { event: EventDef }) {
+  const stats = useEventStats(event.name);
+  const subscribers = event.subscribers ?? [];
+  const publishers = event.publishers ?? [];
+  const mutations = event.mutationsV2 ?? [];
+
+  return (
+    <div className="grid gap-4 items-start" style={{ padding: 22, gridTemplateColumns: "1fr 1fr" }}>
+      {/* Publishers — who emits this event */}
+      <DetailCard title="发布方 · publishers" count={publishers.length}>
+        {event.sourceAction && (
+          <div
+            className="text-[11.5px] text-ink-3 mb-2"
+            style={{
+              padding: "6px 8px",
+              background: "var(--c-info-bg)",
+              border: "1px solid color-mix(in oklab, var(--c-info) 25%, transparent)",
+              borderRadius: 4,
+            }}
+          >
+            <span className="mono text-[10.5px] text-ink-4">source.action</span>{" "}
+            <span className="mono font-semibold text-ink-1">{event.sourceAction}</span>
+          </div>
+        )}
+        {publishers.length === 0 ? (
+          <div className="text-ink-3 text-[12.5px] p-2">
+            — 注册表未声明发布方（Neo4j 上无 EMITS 边） —
+          </div>
+        ) : (
+          publishers.map((p, i) => (
+            <EntityRow
+              key={p}
+              icon={<Ic.cpu />}
+              name={p}
+              meta={i === 0 ? "primary" : "fallback"}
+              tone="info"
+            />
+          ))
+        )}
       </DetailCard>
+
+      {/* Subscribers — who consumes this event */}
+      <DetailCard title="订阅方 · subscribers" count={subscribers.length}>
+        {subscribers.length === 0 ? (
+          <div className="text-ink-3 text-[12.5px] p-2">
+            — 注册表未声明订阅方（Neo4j 上无 TRIGGERS 边或派生项） —
+          </div>
+        ) : (
+          subscribers.map((s) => (
+            <EntityRow
+              key={s}
+              icon={<Ic.plug />}
+              name={s}
+              meta="event subscriber"
+            />
+          ))
+        )}
+      </DetailCard>
+
+      {/* Mutations — business entities the event modifies */}
+      <DetailCard title="状态变更 · state mutations" count={mutations.length} span>
+        {mutations.length === 0 ? (
+          <div className="text-ink-3 text-[12.5px] p-2">
+            — 该事件不修改任何业务实体（pure signal event） —
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {mutations.map((m, i) => (
+              <div
+                key={`${m.targetObject}-${i}`}
+                className="rounded-sm bg-panel border border-line"
+                style={{ padding: "10px 12px" }}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <Ic.db />
+                  <span className="mono text-[12px] font-semibold text-ink-1">{m.targetObject}</span>
+                  <Badge variant={m.mutationType === "DELETE" ? "warn" : "info"}>
+                    {m.mutationType}
+                  </Badge>
+                  <div className="flex-1" />
+                  <span className="mono text-[10.5px] text-ink-4">
+                    {m.impactedProperties.length} fields
+                  </span>
+                </div>
+                {m.impactedProperties.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {m.impactedProperties.map((p) => (
+                      <span
+                        key={p}
+                        className="mono text-[10.5px] text-ink-2 px-1.5 py-px rounded-sm border border-line"
+                        style={{ background: "var(--c-surface)" }}
+                      >
+                        {p}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </DetailCard>
+
+      {/* Live execution counters — only meaningful when something actually runs */}
+      <DetailCard title="实际投递 · 24h" span>
+        {stats ? (
+          stats.rate24h === 0 ? (
+            <div className="text-ink-3 text-[12.5px] p-2">
+              — 24h 内无投递（事件实例 = 0） —
+            </div>
+          ) : (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>下游事件 (caused_by)</th>
+                  <th style={{ width: 100, textAlign: "right" }}>24h 计数</th>
+                  <th style={{ width: 80, textAlign: "right" }}>占比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.downstreamEmits24h.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="text-ink-3 text-[11.5px]" style={{ padding: 12 }}>
+                      — 该事件未触发任何下游 emit —
+                    </td>
+                  </tr>
+                ) : (
+                  stats.downstreamEmits24h.map((d) => (
+                    <tr key={d.name}>
+                      <td className="mono text-[11.5px] text-ink-1">{d.name}</td>
+                      <td className="mono text-right text-[11.5px]">{d.count.toLocaleString()}</td>
+                      <td className="mono text-right text-[10.5px] text-ink-3">
+                        {((d.count / stats.rate24h) * 100).toFixed(1)}%
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )
+        ) : (
+          <div className="text-ink-3 text-[12.5px] p-2">加载中…</div>
+        )}
+      </DetailCard>
+    </div>
+  );
+}
+
+// Per-event EventInstance list. Reuses the same table component as the
+// top-level "实例追踪" sub-tab, but pre-filtered by name so only this
+// event's instances show. em.publish populates EventInstance on every
+// inbound; row-click opens the full trail page.
+function TabInstances({ event }: { event: EventDef }) {
+  const { lang } = useApp();
+  return (
+    <div className="flex flex-col min-h-0">
+      <div
+        className="text-[11.5px] text-ink-3 shrink-0"
+        style={{
+          padding: "8px 22px",
+          borderBottom: "1px solid var(--c-line)",
+          background: "var(--c-panel)",
+        }}
+      >
+        {lang === "zh"
+          ? "每条「实例」代表此事件被 em.publish() 触发并落库的一次具体执行记录，包含 trace_id、payload 快照及处理耗时。"
+          : "Each instance is one concrete firing of this event — recorded by em.publish() with a trace_id, payload snapshot, and processing duration."}
+      </div>
+      <div className="flex-1 overflow-auto">
+        <EventInstancesTab mode="instances" query={{ name: event.name }} />
+      </div>
     </div>
   );
 }
@@ -899,6 +1542,8 @@ type EventLiveStreamProps = {
   setIncludeShared: (v: boolean) => void;
   filter: string;
   setFilter: (s: string) => void;
+  /** When true, occupy the full content area (used by the "实时流" sub-tab). */
+  full?: boolean;
 };
 
 function EventLiveStream({
@@ -909,6 +1554,7 @@ function EventLiveStream({
   setIncludeShared,
   filter,
   setFilter,
+  full,
 }: EventLiveStreamProps) {
   const { t } = useApp();
 
@@ -958,7 +1604,10 @@ function EventLiveStream({
     : { variant: "info" as const, label: "connecting…" };
 
   return (
-    <aside className="border-l border-line bg-surface flex flex-col min-h-0">
+    <aside
+      className={`bg-surface flex flex-col min-h-0 ${full ? "" : "border-l border-line"}`}
+      style={full ? { width: "100%" } : undefined}
+    >
       <div className="border-b border-line flex items-center gap-2" style={{ padding: "12px 14px" }}>
         <div className="text-[13px] font-semibold flex-1">{t("em_stream")}</div>
         <Badge variant={stateBadge.variant} dot>{stateBadge.label}</Badge>
@@ -1110,171 +1759,3 @@ function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
   );
 }
 
-const FIREHOSE_MAX = 200;
-
-function TabFirehose({ event }: { event: EventDef }) {
-  const { t } = useApp();
-  const [items, setItems] = React.useState<InngestEventRow[]>([]);
-  const [paused, setPaused] = React.useState(false);
-  const [autoScroll, setAutoScroll] = React.useState(true);
-  const [includeShared, setIncludeShared] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [pollMs, setPollMs] = React.useState(2500);
-  const tableRef = React.useRef<HTMLDivElement>(null);
-
-  // Poll local Inngest /v1/events via /api/inngest-events for this event name.
-  React.useEffect(() => {
-    if (paused) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const url = `/api/inngest-events?name=${encodeURIComponent(event.name)}&limit=100${includeShared ? "&includeShared=1" : ""}`;
-        const r = await fetch(url);
-        if (!cancelled) {
-          if (!r.ok) {
-            setError(`${r.status} ${r.statusText}`);
-            return;
-          }
-          const j = (await r.json()) as { events: InngestEventRow[]; errors?: Array<{ source: string; message: string }> };
-          setError(j.errors?.length ? j.errors.map((e) => `${e.source}: ${e.message}`).join("; ") : null);
-          setItems(j.events.slice(0, FIREHOSE_MAX));
-        }
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      }
-    };
-    tick();
-    const id = setInterval(tick, pollMs);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [event.name, paused, includeShared, pollMs]);
-
-  React.useEffect(() => {
-    if (autoScroll && tableRef.current) tableRef.current.scrollTop = 0;
-  }, [items, autoScroll]);
-
-  return (
-    <div className="flex flex-col min-h-0">
-      {/* KPI bar */}
-      <div className="grid border border-line rounded-md mb-3" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr", padding: "10px 14px", gap: 14 }}>
-        <div>
-          <div className="hint">events shown</div>
-          <div className="text-[16px] font-semibold tabular-nums">{items.length}</div>
-        </div>
-        <div>
-          <div className="hint">poll interval</div>
-          <div className="text-[12px]">
-            <select
-              value={pollMs}
-              onChange={(e) => setPollMs(Number(e.target.value))}
-              className="bg-panel border border-line rounded-md mono text-[11.5px] px-2 py-1 text-ink-1 outline-none"
-            >
-              <option value={1000}>1s</option>
-              <option value={2500}>2.5s</option>
-              <option value={5000}>5s</option>
-              <option value={10000}>10s</option>
-            </select>
-          </div>
-        </div>
-        <div>
-          <div className="hint">include shared bus</div>
-          <div className="text-[12px]">
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" checked={includeShared} onChange={(e) => setIncludeShared(e.target.checked)} />
-              <span className="mono text-[11.5px]">RAAS 10.100.0.70</span>
-            </label>
-          </div>
-        </div>
-        <div>
-          <div className="hint">state</div>
-          <div className="text-[12px]">
-            <Badge variant={paused ? "info" : error ? "warn" : "ok"} dot>
-              {paused ? "已暂停" : error ? "错误" : "polling"}
-            </Badge>
-          </div>
-        </div>
-      </div>
-
-      {error && (
-        <div className="mb-2 text-[11.5px] mono p-2 rounded-md" style={{ background: "var(--c-warn-bg)", color: "var(--c-warn)" }}>
-          ⚠ {error}
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 mb-3">
-        <Btn size="sm" variant="ghost" onClick={() => setPaused((p) => !p)}>
-          {paused ? t("evt_firehose_resume") : t("evt_firehose_pause")}
-        </Btn>
-        <label className="flex items-center gap-1.5 text-[11.5px] text-ink-2 cursor-pointer">
-          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
-          {t("evt_firehose_autoscroll")}
-        </label>
-        <span className="ml-auto text-ink-3 text-[11px]">
-          source: <span className="mono">/api/inngest-events?name={event.name}</span>
-        </span>
-      </div>
-
-      <div ref={tableRef} className="border border-line rounded-md overflow-auto" style={{ maxHeight: 480 }}>
-        {items.length === 0 ? (
-          <div className="text-ink-3 text-[12px] text-center" style={{ padding: 24 }}>
-            没有 <span className="mono">{event.name}</span> 事件。
-            <br />
-            通过 <span className="mono">/agent-demo</span> 发一个看看；或等 RAAS 通过 bridge 推过来。
-          </div>
-        ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>received_at</th>
-                <th>id</th>
-                <th>source</th>
-                <th>data preview</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((it) => (
-                <FirehoseRow key={it.id} it={it} />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FirehoseRow({ it }: { it: InngestEventRow }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const ts = it.received_at ?? (it.ts ? new Date(it.ts).toISOString() : "");
-  const time = ts ? new Date(ts).toLocaleTimeString() : "—";
-  const dataPreview = JSON.stringify(it.data).slice(0, 120);
-  return (
-    <>
-      <tr onClick={() => setExpanded((v) => !v)} style={{ cursor: "pointer" }}>
-        <td className="mono">{time}</td>
-        <td className="mono text-[11px]">{it.id.slice(-12)}</td>
-        <td>
-          <Badge variant={it._source === "shared" ? "warn" : "info"}>
-            {it._source ?? "local"}
-          </Badge>
-        </td>
-        <td className="text-[11.5px] mono">{dataPreview}</td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={4}>
-            <pre
-              className="mono text-[10.5px] text-ink-2 bg-panel border border-line rounded-md overflow-auto"
-              style={{ padding: 8, margin: 4 }}
-            >
-              {JSON.stringify(it, null, 2)}
-            </pre>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}

@@ -20,7 +20,7 @@
 
 services:
   inngest:
-    image: inngest/inngest:latest
+    image: inngest/inngest:v1.4.0
     container_name: ao-inngest
     restart: unless-stopped
     command:
@@ -30,7 +30,6 @@ services:
       - "0.0.0.0"
       - --port
       - "8288"
-      - --persist
       # 启动时主动 sync AO main repo 的 SDK。partner / 其他 SDK
       # 不自动 sync —— 它们用各自的 Inngest client 启动时自己 PUT
       # 注册到本 dev server 即可。

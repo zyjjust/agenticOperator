@@ -1,11 +1,12 @@
-// RoboHire client — production resume parsing & matching SaaS.
-// API docs: docs/api-external-resume-parsing-and-matching.md
+// RAAS API client — proxies RoboHire resume parsing & matching via internal gateway.
+// API docs: docs/robohire/api-external-resume-parsing-and-matching.md
 //
 // Two endpoints used:
 //   POST /api/v1/parse-resume   multipart, body: file=PDF binary, max 10MB
 //   POST /api/v1/match-resume   JSON,      body: { resume, jd, ... }
 //
-// Auth:    Authorization: Bearer ${ROBOHIRE_API_KEY}
+// Auth:    Authorization: Bearer ${AGENT_API_KEY}   (provided by raas team)
+// Base:    RAAS_API_BASE_URL (dev: http://localhost:3001; prod: https://aicoe.chinasoftinc.com/raas-api)
 // Latency: parse 3-8s, match 5-15s. Configurable timeout (default 120s).
 //
 // IMPORTANT — return shape is RAW.
@@ -15,8 +16,8 @@
 // verbatim. The caller is expected to dump it directly into
 // `payload.parsed.data` (and `payload.match.data` for match outcomes).
 
-const BASE = process.env.ROBOHIRE_BASE_URL ?? "https://api.robohire.io";
-const KEY = process.env.ROBOHIRE_API_KEY ?? "";
+const BASE = process.env.RAAS_API_BASE_URL ?? "http://localhost:3001";
+const KEY = process.env.AGENT_API_KEY ?? "";
 const TIMEOUT_MS = Number(process.env.ROBOHIRE_TIMEOUT_MS ?? 120_000);
 
 export class RoboHireError extends Error {
@@ -40,6 +41,8 @@ export type RoboHireParseResult = {
   /** RoboHire response `data` field — passed through verbatim. */
   data: Record<string, unknown>;
   requestId: string;
+  /** RAAS-minted or caller-supplied trace ID echoed in X-Trace-Id response header. */
+  traceId?: string;
   cached: boolean;
   documentId?: string;
   savedAs?: string;
@@ -50,7 +53,7 @@ export async function roboHireParseResume(
   fileBuffer: Buffer,
   filename: string,
 ): Promise<RoboHireParseResult> {
-  if (!KEY) throw new RoboHireError(0, "ROBOHIRE_API_KEY not set");
+  if (!KEY) throw new RoboHireError(0, "AGENT_API_KEY not set");
 
   const startedAt = Date.now();
   const form = new FormData();
@@ -69,6 +72,7 @@ export async function roboHireParseResume(
   });
 
   const headerRequestId = res.headers.get("x-request-id") ?? "";
+  const headerTraceId = res.headers.get("x-trace-id") ?? "";
 
   if (!res.ok) {
     let msg = res.statusText;
@@ -106,7 +110,7 @@ export async function roboHireParseResume(
   if (!json.data) {
     throw new RoboHireError(
       500,
-      "RoboHire 200 response missing `data`",
+      "RAAS API 200 response missing `data`",
       json.requestId ?? headerRequestId,
     );
   }
@@ -114,6 +118,7 @@ export async function roboHireParseResume(
   return {
     data: json.data,
     requestId: json.requestId ?? headerRequestId,
+    traceId: headerTraceId || undefined,
     cached: Boolean(json.cached),
     documentId: json.documentId,
     savedAs: json.savedAs,
@@ -138,6 +143,8 @@ export type RoboHireMatchResult = {
   /** RoboHire response `data` field — passed through verbatim. */
   data: Record<string, unknown>;
   requestId: string;
+  /** RAAS-minted or caller-supplied trace ID echoed in X-Trace-Id response header. */
+  traceId?: string;
   savedAs?: string;
   duration_ms: number;
 };
@@ -145,7 +152,7 @@ export type RoboHireMatchResult = {
 export async function roboHireMatchResume(
   input: RoboHireMatchInput,
 ): Promise<RoboHireMatchResult> {
-  if (!KEY) throw new RoboHireError(0, "ROBOHIRE_API_KEY not set");
+  if (!KEY) throw new RoboHireError(0, "AGENT_API_KEY not set");
 
   const startedAt = Date.now();
   const body: Record<string, string> = {
@@ -166,6 +173,7 @@ export async function roboHireMatchResume(
   });
 
   const headerRequestId = res.headers.get("x-request-id") ?? "";
+  const headerTraceId = res.headers.get("x-trace-id") ?? "";
   if (!res.ok) {
     let msg = res.statusText;
     let bodyRequestId = "";
@@ -200,7 +208,7 @@ export async function roboHireMatchResume(
   if (!json.data) {
     throw new RoboHireError(
       500,
-      "RoboHire 200 response missing `data`",
+      "RAAS API 200 response missing `data`",
       json.requestId ?? headerRequestId,
     );
   }
@@ -208,6 +216,7 @@ export async function roboHireMatchResume(
   return {
     data: json.data,
     requestId: json.requestId ?? headerRequestId,
+    traceId: headerTraceId || undefined,
     savedAs: json.savedAs,
     duration_ms: Date.now() - startedAt,
   };

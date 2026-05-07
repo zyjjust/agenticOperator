@@ -28,22 +28,31 @@ export function LeftNav() {
     return () => clearInterval(id);
   }, []);
 
+  // IA reorg (UX review feedback):
+  //   - Events / Triggers move from "Build" to "Operate" — they're observability
+  //     surfaces over the runtime, not authoring tools.
+  //   - "Build" reduced to Workflow editor + Sample Agent (the only real
+  //     authoring surfaces today).
+  //   - "Govern" gets Data Sources + Permissions + Audit + Compliance.
+  //     Audit is now real (`/audit` page wired to AuditLog table); the others
+  //     remain `#` until backend lands but stay in the nav as roadmap signals.
   const items: NavItem[] = [
     { type: "group", title: t("nav_group_operate") },
     { type: "item", id: "overview",   icon: "grid",     label: t("nav_overview"), href: "/" },
     { type: "item", id: "fleet",      icon: "cpu",      label: t("nav_fleet"), count: "22", href: "/fleet" },
     { type: "item", id: "runs",       icon: "play",     label: t("nav_runs"),  count: "—", href: "/live" },
     { type: "item", id: "inbox",      icon: "user",     label: t("nav_inbox"), count: inboxCount, href: "/inbox" },
+    { type: "item", id: "events",     icon: "bolt",     label: t("nav_events"), href: "/events" },
+    { type: "item", id: "triggers",   icon: "clock",    label: t("nav_triggers"), href: "/triggers" },
+    { type: "item", id: "correlations", icon: "branch", label: "因果链", href: "/correlations" },
     { type: "item", id: "alerts",     icon: "alert",    label: t("nav_alerts"),count: "—", href: "/alerts" },
     { type: "group", title: t("nav_group_build") },
     { type: "item", id: "workflows",  icon: "workflow", label: t("nav_workflows"), count: "1", href: "/workflow" },
-    { type: "item", id: "events",     icon: "bolt",     label: t("nav_events"), href: "/events" },
-    { type: "item", id: "triggers",   icon: "clock",    label: t("nav_triggers"), href: "/triggers" },
     { type: "item", id: "agent-demo", icon: "sparkle",  label: "Sample Agent", href: "/agent-demo" },
-    { type: "item", id: "integrations", icon: "plug",   label: t("nav_integrations"), href: "/datasources" },
     { type: "group", title: t("nav_group_govern") },
+    { type: "item", id: "integrations", icon: "plug",   label: t("nav_integrations"), href: "/datasources" },
+    { type: "item", id: "audit",      icon: "book",     label: t("nav_audit"), href: "/audit" },
     { type: "item", id: "permissions",icon: "key",      label: t("nav_permissions"), href: "#" },
-    { type: "item", id: "audit",      icon: "book",     label: t("nav_audit"), href: "#" },
     { type: "item", id: "compliance", icon: "shield",   label: t("nav_compliance"), href: "#" },
   ];
 

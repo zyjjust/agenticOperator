@@ -100,6 +100,9 @@ function toDetail(t: any, fallbackId: string): HumanTaskDetail {
     aiOpinion: t.aiOpinion ?? null,
     hasChatbotSession: !!t.chatbotSessionId,
     chatbotSessionId: t.chatbotSessionId ?? null,
+    // EM v2 §10.4 — surface trigger event link when the task has one.
+    triggeringEventInstanceId: t.triggeringEventInstanceId ?? null,
+    triggeringEventName: t.triggeringEventName ?? null,
   };
 }
 

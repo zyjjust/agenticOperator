@@ -10,6 +10,7 @@ export default defineConfig({
       '**/node_modules/**',
       '.next',
       'Action_and_Event_Manager',
+      'event_manager',
       'resume-parser-agent',
       'raas_v4',
     ],

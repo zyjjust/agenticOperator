@@ -67,6 +67,23 @@ export type StepDetail = {
 };
 export type StepsResponse = { steps: StepDetail[]; meta: ApiMeta };
 
+export type EventField = {
+  name: string;
+  /** RAAS type string ("String", "Boolean", "List<String>", "Job_Requisition", ...). */
+  type: string;
+  required: boolean;
+  position: number;
+  /** Business entity referenced when this field carries an embedded object. */
+  targetObject: string | null;
+};
+
+export type EventMutation = {
+  targetObject: string;
+  /** "CREATE_OR_MODIFY", "DELETE", etc. */
+  mutationType: string;
+  impactedProperties: string[];
+};
+
 export type EventContract = {
   name: string;
   stage: Stage;
@@ -79,8 +96,44 @@ export type EventContract = {
   schemaVersion: number;
   rateLastHour: number;
   errorRateLastHour: number;
+  // Provenance — where this contract came from. Neo4j is the source of truth;
+  // 'hardcoded' means we're in cold-start fallback (Neo4j sync never succeeded
+  // AND DB is empty). Frontend should badge this prominently.
+  source: 'neo4j' | 'hardcoded' | 'manual';
+  syncedAt: string | null;
+  activeVersions: string[];
+  // Independent of `source` (which describes metadata provenance), this
+  // describes the runtime *validator*: whether em.publish actually validates
+  // against a Neo4j-derived Zod schema or only the builtin fallback. Mixed
+  // is possible per-version — see versionSources.
+  schemaSource?: 'neo4j' | 'builtin' | 'missing';
+  versionSources?: Array<{ version: string; source: 'neo4j' | 'builtin'; fallbackReason?: string }>;
+  // Raw RAAS-shape data (only present when source === 'neo4j'). Used by the
+  // Payload / Subscribers tabs to render fidelity that JSON Schema can't carry.
+  fields?: EventField[];
+  mutations?: EventMutation[];
+  sourceAction?: string | null;
+  /** Allmeta breaking-change flag — UI badges in red. */
+  isBreakingChange?: boolean;
+  /** When sync detected an actual content delta, this advances. */
+  lastChangedAt?: string | null;
+  /** ISO timestamp when sync first noticed this name was missing from Neo4j. */
+  retiredAt?: string | null;
+  /** Allmeta upstream tracking (sourceFile / upstreamUpdatedAt) carried via extraJson. */
+  sourceFile?: string | null;
 };
-export type EventsResponse = { events: EventContract[]; meta: ApiMeta };
+export type EventsMeta = ApiMeta & {
+  // Aggregate provenance for the response. 'neo4j' = all rows from synced cache;
+  // 'hardcoded' = pure fallback (cold start); 'mixed' = both (rare but possible).
+  source: 'neo4j' | 'hardcoded' | 'mixed';
+  // Most recent successful Neo4j sync. null when sync has never succeeded.
+  lastNeo4jSyncAt: string | null;
+  // Last error from sync worker (still null when last attempt succeeded).
+  lastNeo4jError: string | null;
+  totalNeo4jRows: number;
+  totalHardcodedRows: number;
+};
+export type EventsResponse = { events: EventContract[]; meta: EventsMeta };
 
 export type ActivityEvent = {
   id: string;
@@ -139,6 +192,10 @@ export type HumanTaskCard = {
   assignee: string | null;
   deadline: string | null;
   createdAt: string;
+  // EM v2 §10.4 — when populated, the inbox card renders a deep link back
+  // to the EventInstance that triggered this HITL escalation.
+  triggeringEventInstanceId?: string | null;
+  triggeringEventName?: string | null;
 };
 export type HumanTasksResponse = {
   total: number;
@@ -153,6 +210,9 @@ export type HumanTaskDetail = HumanTaskCard & {
   aiOpinion: unknown | null;
   hasChatbotSession: boolean;
   chatbotSessionId: string | null;
+  // triggeringEventInstanceId / triggeringEventName already inherited from
+  // HumanTaskCard above, but re-affirmed here so callers don't have to
+  // chase down the parent type.
 };
 
 export type HumanTaskAction =

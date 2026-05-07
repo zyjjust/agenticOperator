@@ -98,10 +98,18 @@ model HumanTask {
   eventData     String?   // JSON
   resolvedBy    String?
 
+  // EM v2 spec §10.4 — when an agent escalates via business rules, it must
+  // record the EventInstance that triggered the escalation. Lets /inbox
+  // cards link back to /events/:name/instances/:id. Optional today (legacy
+  // tasks lack it) but populated by all new agent code paths.
+  triggeringEventInstanceId String?  @map("triggering_event_instance_id")
+  triggeringEventName       String?  @map("triggering_event_name")
+
   @@index([runId])
   @@index([status])
   @@index([nodeId])
   @@index([assignee])
+  @@index([triggeringEventInstanceId])
 }
 
 model ChatbotSession {
@@ -274,6 +282,14 @@ model AgentConfigHistory {
 
 // EM event-definition table; AO reads ACTIVE rows only as event-contract
 // cache. No edit operations exposed by AO.
+//
+// v2 spec additions (additive, optional):
+//   activeVersionsJson: JSON array of version strings, descending (latest first)
+//   schemasByVersionJson: JSON object { "2.0": <jsonschema>, "1.0": ... }
+//   publishersJson / subscribersJson: JSON string[]
+//   source: 'neo4j' (synced) | 'hardcoded' (fallback) | 'manual'
+//   syncedAt: last successful Neo4j sync
+//   retiredAt: hide from UI when set
 model EventDefinition {
   id          String  @id @default(uuid())
   name        String  @unique
@@ -287,7 +303,78 @@ model EventDefinition {
   createdAt   String  @map("created_at")
   updatedAt   String  @map("updated_at")
 
+  // v2 additive fields
+  activeVersionsJson    String?   @map("active_versions_json")    // JSON: string[]
+  schemasByVersionJson  String?   @map("schemas_by_version_json") // JSON: Record<version, JsonSchema>
+  publishersJson        String?   @map("publishers_json")         // JSON: string[]
+  subscribersJson       String?   @map("subscribers_json")        // JSON: string[]
+  source                String    @default("hardcoded")            // 'neo4j' | 'hardcoded' | 'manual'
+  syncedAt              DateTime? @map("synced_at")
+  retiredAt             DateTime? @map("retired_at")
+
+  // Change detection: SHA-256(description + payload + extraJson + publishers
+  // + subscribers). Sync compares this against the new computed hash to
+  // decide whether the row actually changed (vs. just got re-touched). If
+  // it changed, lastChangedAt is set to NOW().
+  contentHash           String?   @map("content_hash")
+  lastChangedAt         DateTime? @map("last_changed_at")
+
+  // Allmeta sets `is_breaking_change` on the Event node when a published
+  // version contains a non-back-compatible mutation. We surface this so
+  // /events shows a red badge and ops knows to verify nothing in flight
+  // depends on the old shape.
+  isBreakingChange      Boolean   @default(false) @map("is_breaking_change")
+
+  @@index([source, syncedAt])
+  @@index([retiredAt])
+  @@index([lastChangedAt])
   @@map("events")
+}
+
+// EM v2 §9 — EventInstance: business-level publish trail. One row per
+// em.publish() call. Inngest stores the full payload; this table stores
+// summary + provenance + lifecycle status for UI / audit / replay.
+model EventInstance {
+  id                  String    @id @default(uuid())
+  externalEventId     String?   @unique @map("external_event_id")
+  name                String
+  source              String                              // "raas-bridge" | "rpa.matchResumeAgent" | ...
+  status              String                              // accepted | rejected_schema | rejected_filter | duplicate | meta_rejection | em_degraded
+  rejectionType       String?   @map("rejection_type")    // SCHEMA_VALIDATION_FAILED | FILTER_REJECTED
+  rejectionReason     String?   @map("rejection_reason")
+  schemaErrors        String?   @map("schema_errors")     // JSON: ZodIssue[]
+  schemaVersionUsed   String?   @map("schema_version_used")
+  triedVersions       String?   @map("tried_versions")    // JSON: string[]
+  causedByEventId     String?   @map("caused_by_event_id")
+  causedByName        String?   @map("caused_by_name")
+  payloadSummary      String?   @map("payload_summary")   // JSON snippet
+  ts                  DateTime  @default(now())
+
+  @@index([name, ts])
+  @@index([status])
+  @@index([causedByEventId])
+  @@index([source])
+  @@map("event_instances")
+}
+
+// EM library health snapshot (singleton row id='singleton').
+// Driven by server/em/degraded-mode.ts. UI reads to render AppBar dot etc.
+model EmSystemStatus {
+  id                String    @id @default("singleton")
+  state             String    @default("healthy")  // 'healthy' | 'degraded' | 'down'
+  degradedSince     DateTime? @map("degraded_since")
+  lastError         String?   @map("last_error")
+  lastErrorAt       DateTime? @map("last_error_at")
+  fallbackCount24h  Int       @default(0) @map("fallback_count_24h")
+  publishCount24h   Int       @default(0) @map("publish_count_24h")
+  rejectCount24h    Int       @default(0) @map("reject_count_24h")
+  // Neo4j sync sub-status
+  neo4jLastSyncAt   DateTime? @map("neo4j_last_sync_at")
+  neo4jLastError    String?   @map("neo4j_last_error")
+  neo4jUpsertedLast Int       @default(0) @map("neo4j_upserted_last")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@map("em_system_status")
 }
 
 model GatewayFilterRule {

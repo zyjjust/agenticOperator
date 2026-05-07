@@ -3,6 +3,7 @@ import React from "react";
 import clsx from "clsx";
 import { Ic } from "./Ic";
 import { useApp } from "@/lib/i18n";
+import { useEmHealth } from "@/lib/api/em-health";
 
 export function AppBar({
   crumbs = [],
@@ -12,6 +13,9 @@ export function AppBar({
   onOpenCmdK?: () => void;
 }) {
   const { t, lang, setLang, theme, setTheme } = useApp();
+  // Global EM health pill — visible from every page so degraded mode
+  // (Neo4j unreachable / EM library faulted) is never invisible.
+  const emHealth = useEmHealth();
   return (
     <div className="flex items-center h-11 px-3.5 gap-3 border-b border-line bg-surface relative z-10">
       <div className="flex items-center gap-2 font-semibold text-[13px] tracking-tight">
@@ -53,6 +57,8 @@ export function AppBar({
         <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--c-ok)] anim-pulse" style={{ boxShadow: "0 0 0 3px color-mix(in oklab, var(--c-ok) 20%, transparent)" }} />
         {t("realtime")}
       </div>
+
+      <EmStatusPill health={emHealth.data} loading={emHealth.loading} onSync={emHealth.syncNow} />
 
       {/* Language segmented */}
       <div className="flex items-center h-6 p-[2px] bg-panel border border-line rounded-md">
@@ -96,5 +102,61 @@ export function AppBar({
         Z
       </div>
     </div>
+  );
+}
+
+// EM dot — three states: healthy (green) / degraded (orange) / down or
+// unconfigured (red). Click triggers a manual sync; tooltip explains why.
+function EmStatusPill({
+  health,
+  loading,
+  onSync,
+}: {
+  health: ReturnType<typeof useEmHealth>["data"];
+  loading: boolean;
+  onSync: () => Promise<void>;
+}) {
+  const state = health?.state ?? (loading ? "loading" : "unknown");
+  const palette: Record<string, { color: string; label: string }> = {
+    healthy: { color: "var(--c-ok)", label: "EM 正常" },
+    degraded: { color: "var(--c-warn)", label: "EM 降级" },
+    down: { color: "var(--c-err)", label: "EM 不可用" },
+    unconfigured: { color: "var(--c-ink-3)", label: "EM 未配置" },
+    loading: { color: "var(--c-ink-4)", label: "EM 检测中" },
+    unknown: { color: "var(--c-ink-3)", label: "EM 状态未知" },
+  };
+  const p = palette[state] ?? palette.unknown;
+  const tooltip = health
+    ? [
+        `状态：${p.label}`,
+        health.neo4j.configured
+          ? `Neo4j：${health.neo4j.reachable ? "可达" : "不通"}${health.neo4j.error ? ` · ${health.neo4j.error}` : ""}`
+          : "Neo4j：未配置",
+        health.neo4j.lastSyncAt
+          ? `上次同步：${new Date(health.neo4j.lastSyncAt).toLocaleString(undefined, { hour12: false })}`
+          : "尚未成功同步",
+        "（点击立即同步）",
+      ].join("\n")
+    : "EM 健康检查中…";
+
+  return (
+    <button
+      onClick={() => void onSync()}
+      title={tooltip}
+      className="inline-flex items-center gap-1.5 h-6 px-2 rounded-full text-[11px] bg-panel border border-line whitespace-nowrap cursor-pointer hover:border-line-strong"
+      style={{ color: "var(--c-ink-2)" }}
+    >
+      <span
+        className={state === "healthy" ? "anim-pulse" : ""}
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: p.color,
+          boxShadow: `0 0 0 3px color-mix(in oklab, ${p.color} 18%, transparent)`,
+        }}
+      />
+      EM
+    </button>
   );
 }

@@ -242,3 +242,53 @@ export function CardHead({
     </div>
   );
 }
+
+// ---- EmptyState ----
+// Use whenever a list / table / panel has zero rows. Keeps wording uniform
+// and prevents the "blank canvas" effect on /events filter, /inbox queue,
+// /alerts, /audit, etc.
+export function EmptyState({
+  icon,
+  title,
+  hint,
+  action,
+  variant = "default",
+  className,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+  variant?: "default" | "info" | "warn";
+  className?: string;
+}) {
+  const tone =
+    variant === "warn"
+      ? "var(--c-warn)"
+      : variant === "info"
+        ? "var(--c-info)"
+        : "var(--c-ink-3)";
+  return (
+    <div
+      className={clsx(
+        "flex flex-col items-center justify-center text-center gap-2 py-10 px-6 text-ink-3",
+        className,
+      )}
+    >
+      {icon && (
+        <div
+          className="w-9 h-9 rounded-full grid place-items-center"
+          style={{
+            background: `color-mix(in oklab, ${tone} 10%, transparent)`,
+            color: tone,
+          }}
+        >
+          {icon}
+        </div>
+      )}
+      <div className="text-[13px] font-semibold text-ink-1">{title}</div>
+      {hint && <div className="text-[11.5px] max-w-[360px] leading-relaxed">{hint}</div>}
+      {action && <div className="mt-1">{action}</div>}
+    </div>
+  );
+}
