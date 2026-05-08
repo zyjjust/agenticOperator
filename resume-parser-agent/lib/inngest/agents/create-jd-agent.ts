@@ -193,16 +193,33 @@ export const createJdAgent = inngest.createFunction(
     const jdId = `jd_${randomUUID().slice(0, 8)}_${Date.now().toString(36)}`;
 
     // ── 5. 调 RAAS API: POST /api/v1/jd/sync-generated ──
+    //
+    // doc v5 §4.6: handler 同时接受 camelCase (RoboHire 原始) 和 snake_case
+    // (raas 内部)。最便捷写法 — 直接 spread generate-jd 的 data，
+    // 再加上 requirement 详情里 raas snake_case 的增强字段（must-have /
+    // nice-to-have / 学历 / 年限 / 面试形式等，generate-jd 不给的）。
     await step.run(`sync-jd-${sanitize(requisitionId)}`, async () => {
       const input: SyncJdInput = {
         job_requisition_id: requisitionId,
         client_id: clientId,
-        posting_title: typeof jdData.title === 'string' ? jdData.title : undefined,
-        posting_description:
-          typeof jdData.description === 'string' ? jdData.description : undefined,
-        jd_content: jdData as Record<string, unknown>,
-        city: pickCity(jdData),
-        salary_range: pickSalaryRange(jdData),
+        // a) RoboHire camelCase 整段 spread (title/description/qualifications/
+        //    hardRequirements/niceToHave/salaryMin/salaryMax/... 全部带过去)
+        ...(jdData as Record<string, unknown>),
+        // b) requirement 详情里的 raas 增强字段（generate-jd 没给，但 RAAS
+        //    端持久化 JobRequisition 需要）。仅当原 jdData 没覆盖时透传。
+        must_have_skills: arrayOrUndefined(requirement.must_have_skills),
+        nice_to_have_skills: arrayOrUndefined(requirement.nice_to_have_skills),
+        negative_requirement: stringOrUndefined(requirement.negative_requirement),
+        language_requirements: stringOrUndefined(requirement.language_requirements),
+        expected_level: stringOrUndefined(requirement.expected_level),
+        degree_requirement: stringOrUndefined(requirement.degree_requirement),
+        education_requirement: stringOrUndefined(requirement.education_requirement),
+        work_years:
+          typeof requirement.work_years === 'number' ? requirement.work_years : undefined,
+        interview_mode: stringOrUndefined(requirement.interview_mode),
+        recruitment_type: stringOrUndefined(requirement.recruitment_type),
+        // c) city 转 array（RoboHire 给的是 string，RAAS JobPosting 期望 array）
+        city: pickCityFromBoth(requirement, jdData),
       };
       try {
         const r = await syncJdGenerated(input, { traceId });
@@ -230,8 +247,13 @@ export const createJdAgent = inngest.createFunction(
         client_id: clientId,
         posting_title: typeof jdData.title === 'string' ? jdData.title : '未命名岗位',
         posting_description: typeof jdData.description === 'string' ? jdData.description : '',
-        city: pickCity(jdData) ?? [],
-        salary_range: pickSalaryRange(jdData) ?? '',
+        city: pickCityFromBoth(requirement, jdData) ?? [],
+        salary_range:
+          (typeof jdData.salaryText === 'string' && jdData.salaryText.trim())
+            ? jdData.salaryText.trim()
+            : (jdData.salaryMin != null && jdData.salaryMax != null)
+              ? `${jdData.salaryMin}-${jdData.salaryMax}`
+              : '',
         interview_mode:
           (requirement.interview_mode as string | undefined) ?? 'unspecified',
         degree_requirement:
@@ -398,22 +420,33 @@ function sanitize(s: string): string {
   return s.replace(/[^A-Za-z0-9-]/g, '-').slice(0, 80) || 'unknown';
 }
 
-function pickCity(jdData: RaasGenerateJdData): string[] | undefined {
+/**
+ * city 取值优先级:
+ *   1) requirement.city (raas 已知字段，最权威) — 字符串转 array
+ *   2) jdData.location (RoboHire 从 prompt 抽出来的)
+ *   3) undefined
+ */
+function pickCityFromBoth(
+  requirement: RaasRequirement,
+  jdData: RaasGenerateJdData,
+): string[] | undefined {
+  const reqCity = stringOrUndefined(requirement.city);
+  if (reqCity) return [reqCity];
   if (typeof jdData.location === 'string' && jdData.location.trim()) {
     return [jdData.location.trim()];
   }
   return undefined;
 }
 
-function pickSalaryRange(jdData: RaasGenerateJdData): string | undefined {
-  if (typeof jdData.salaryText === 'string' && jdData.salaryText.trim()) {
-    return jdData.salaryText.trim();
+function arrayOrUndefined(v: unknown): string[] | undefined {
+  if (Array.isArray(v) && v.length > 0) {
+    return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
   }
-  const min = jdData.salaryMin;
-  const max = jdData.salaryMax;
-  if (min != null && max != null) {
-    return `${String(min)}-${String(max)}`;
-  }
+  return undefined;
+}
+
+function stringOrUndefined(v: unknown): string | undefined {
+  if (typeof v === 'string' && v.trim().length > 0) return v.trim();
   return undefined;
 }
 

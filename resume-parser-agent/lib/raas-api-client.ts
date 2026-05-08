@@ -311,9 +311,70 @@ export async function saveCandidate(
 
 // ─── 4.6 jd/sync-generated persist ──────────────────────────────────
 
+/**
+ * sync-generated 入参 — handler **同时接受 camelCase（RoboHire 原始）和
+ * snake_case（raas 内部）**（doc v5 §4.6 2026-05-08 起）。最便捷的写法是
+ * 拿到 generate-jd 的 data 直接 spread:
+ *
+ *   await syncJdGenerated({
+ *     job_requisition_id, client_id,
+ *     ...generateJdResult.data,    // ← RoboHire camelCase 全部带过去
+ *     // (可选) 额外补 snake_case 增强字段:
+ *     must_have_skills, nice_to_have_skills, expected_level, ...
+ *   })
+ *
+ * 字段语义对照 (节选, 完整见 doc §4.6 表):
+ *   title           / posting_title         → JobPosting.posting_title
+ *   description     / posting_description   → JobPosting.posting_description
+ *   salaryText      / salary_text           → JobPosting.salary_range
+ *   salaryMin       / salary_min            → JobPosting.salary_range_monthly_min
+ *   salaryMax       / salary_max            → JobPosting.salary_range_monthly_max
+ *   salaryCurrency  / salary_currency       → JobPosting.salary_currency
+ *   salaryPeriod    / salary_period         → JobPosting.salary_period
+ *   qualifications                          → JobRequisition.qualifications
+ *   hardRequirements / hard_requirements    → JobRequisition.hard_requirements
+ *   niceToHave      / nice_to_have          → JobRequisition.nice_to_have
+ *   interviewRequirements / interview_requirements → JobRequisition.interview_requirements
+ *   evaluationRules / evaluation_rules      → JobRequisition.evaluation_rules
+ *   must_have_skills, nice_to_have_skills, negative_requirement,
+ *   language_requirements, expected_level, degree_requirement,
+ *   education_requirement, work_years, interview_mode, recruitment_type → JobRequisition.*
+ *   city (string[]) → JobPosting.city (取 [0])
+ *   search_keywords (string[]) → JobPosting.search_keywords (前 5)
+ *
+ * 未持久化（doc 列出，handler 忽略，agent 可不传）:
+ *   companyName · department · location · workType · employmentType ·
+ *   experienceLevel · education · benefits · meta.stages.*
+ */
 export type SyncJdInput = {
+  // ── 必填 ──
   job_requisition_id: string;
   client_id: string;
+
+  // ── RoboHire camelCase (来自 generate-jd data，spread 即可) ──
+  title?: string;
+  description?: string;
+  qualifications?: string;
+  hardRequirements?: string;
+  niceToHave?: string;
+  interviewRequirements?: string;
+  evaluationRules?: string;
+  benefits?: string;
+  salaryMin?: number | string;
+  salaryMax?: number | string;
+  salaryCurrency?: string;
+  salaryPeriod?: string;
+  salaryText?: string;
+  headcount?: number | string;
+  experienceLevel?: string;
+  education?: string;
+  employmentType?: string;
+  location?: string;
+  workType?: string;
+  companyName?: string;
+  department?: string;
+
+  // ── raas snake_case (内部惯例 + 可选增强) ──
   posting_title?: string;
   posting_description?: string;
   must_have_skills?: string[];
@@ -329,8 +390,11 @@ export type SyncJdInput = {
   city?: string[];
   salary_range?: string;
   search_keywords?: string[];
-  /** RoboHire /generate-jd `data` payload as fallback for title / salary. */
+  /** legacy fallback — handler 仅读 .title / .salaryBenefits */
   jd_content?: Record<string, unknown>;
+
+  // ── 允许额外字段（spread RoboHire data 时可能带入未来新字段）──
+  [key: string]: unknown;
 };
 
 export type SyncJdResult = {
