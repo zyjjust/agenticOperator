@@ -251,6 +251,96 @@ export async function generateJd(
   };
 }
 
+// ─── 4.8 resumes/uploads/:upload_id/raw — 拉原始 PDF 字节 ──────────
+//
+// doc v7 §4.8: agent 收到 RESUME_DOWNLOADED 事件后,按 upload_id 拉
+// 原始 PDF 字节,自己包 multipart 调 POST /api/v1/parse-resume,再调
+// POST /api/v1/candidates 落库.
+//
+// 为什么不能直接读 event payload 里的 parsed.data:
+//   raas 在事件里**不**预先 parse —— 按 ADR-0011 边界, parse-resume 是
+//   raas 提供的"加工能力", 编排 (何时 parse / parse 失败兜底 / parse
+//   结果如何写库) 是 agent 责任. 事件 payload 只带上传元数据
+//   (upload_id / bucket / object_key / etag / filename / operator_*).
+
+export type DownloadResumeRawResponse = {
+  /** 原始 PDF 字节. */
+  pdf: Buffer;
+  /** Content-Type from response header (一般是 application/pdf). */
+  contentType: string;
+  /** 从 Content-Disposition 解析的 filename, 可能 undefined. */
+  filename?: string;
+  /** trace_id from response header. */
+  traceId?: string;
+};
+
+/**
+ * GET /api/v1/resumes/uploads/:upload_id/raw — 拉原始 PDF 字节.
+ *
+ * 直接返回 application/pdf 字节流, 不是 JSON envelope. 调用者负责
+ * 把返回的 Buffer 喂给 parseResume(buffer, filename, opts).
+ */
+export async function downloadResumeRaw(
+  uploadId: string,
+  opts: CommonOpts = {},
+): Promise<DownloadResumeRawResponse> {
+  if (!uploadId || !uploadId.trim()) {
+    throw new RaasApiError(0, 'CLIENT', 'downloadResumeRaw: uploadId required');
+  }
+
+  const { baseUrl, agentKey } = config();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${agentKey}`,
+  };
+  if (opts.traceId) headers['X-Trace-Id'] = opts.traceId;
+
+  const url = `${baseUrl}/api/v1/resumes/uploads/${encodeURIComponent(uploadId.trim())}/raw`;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS_DEFAULT;
+
+  const res = await fetch(url, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  const responseTraceId =
+    res.headers.get('x-trace-id') ?? res.headers.get('X-Trace-Id') ?? undefined;
+
+  if (!res.ok) {
+    // 错误 body 可能是 JSON envelope, 也可能是空/text. 尝试 parse,失败用兜底.
+    type RaasErrEnvelope = { code?: string; error?: string; requestId?: string; traceId?: string };
+    let errorBody: RaasErrEnvelope = {};
+    try {
+      const j = (await res.json()) as RaasErrEnvelope;
+      if (j && typeof j === 'object') errorBody = j;
+    } catch {
+      // ignore — non-JSON error response
+    }
+    throw new RaasApiError(
+      res.status,
+      errorBody.code ?? `HTTP_${res.status}`,
+      errorBody.error ?? `download raw resume failed (upload_id=${uploadId})`,
+      errorBody.requestId,
+      errorBody.traceId ?? responseTraceId,
+    );
+  }
+
+  const arrayBuf = await res.arrayBuffer();
+  const pdf = Buffer.from(arrayBuf);
+
+  // Content-Disposition: inline; filename="zhangsan_resume.pdf"
+  const cd = res.headers.get('content-disposition') ?? '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  const filename = m ? decodeURIComponent(m[1]) : undefined;
+
+  return {
+    pdf,
+    contentType: res.headers.get('content-type') ?? 'application/pdf',
+    filename,
+    traceId: responseTraceId,
+  };
+}
+
 // ─── 4.4 invite-interview (currently 501) ───────────────────────────
 
 export type InviteInterviewInput = {
@@ -413,6 +503,33 @@ export async function syncJdGenerated(
 
 // ─── 4.7 match-results persist ──────────────────────────────────────
 
+/**
+ * /api/v1/match-results 单条 item.
+ *
+ * doc 推荐写法（跟 §4.6 sync-generated 一样）: 拿到 RoboHire /match-resume
+ * `data` 后**整段 spread**, agent 不需要 cherry-pick 字段名:
+ *
+ *   await saveMatchResults({
+ *     source: 'need_interview',
+ *     candidate_id, upload_id, job_requisition_id, client_id,
+ *     ...matchResult.data,    // ← RoboHire 全 20+ 字段透传
+ *   })
+ *
+ * RoboHire /match-resume 实际返回的字段（partner 文档 2026-05-08 验证）:
+ *   resumeAnalysis · jdAnalysis · mustHaveAnalysis · niceToHaveAnalysis ·
+ *   skillMatch · skillMatchScore · experienceMatch · experienceValidation ·
+ *   candidatePotential · transferableSkills · experienceBreakdown ·
+ *   hardRequirementGaps · overallMatchScore · overallFit · recommendations ·
+ *   suggestedInterviewQuestions · areasToProbeDeeper · preferenceAlignment ·
+ *   candidateSummary · savedAs
+ *
+ * 这跟 doc §4.2 列出的"标准 6 字段" (matchScore/recommendation/summary/
+ * matchAnalysis/mustHaveAnalysis/niceToHaveAnalysis) 不一致 —— doc §4.2
+ * 描述的是简化语义, 实际 RoboHire 字段更细. agent 不要按 §4.2 cherry-pick,
+ * 直接 spread 整段 data, 让 RAAS 端按需挑字段写库.
+ *
+ * `[key: string]: unknown` 兜底, 允许 RoboHire 未来加新字段不破类型.
+ */
 export type MatchResultItem = {
   /** Either candidate_id OR upload_id required. */
   candidate_id?: string;
@@ -422,14 +539,46 @@ export type MatchResultItem = {
   job_id?: string;
   client_id?: string;
   job_posting_id?: string;
+  /** Explicit override, otherwise raas dedups on (candidate_id, job_requisition_id). */
+  candidate_match_result_id?: string;
+
+  // ── doc §4.2 列出的"简化 6 字段" — 实际 RoboHire 不一定都返回, 用 spread
+  //    覆盖更稳, 这些字段保留只为类型提示 ──
   matchScore?: number;
   matchAnalysis?: Record<string, unknown>;
   mustHaveAnalysis?: Record<string, unknown>;
   niceToHaveAnalysis?: Record<string, unknown>;
   summary?: string;
   recommendation?: string;
-  /** Explicit override, otherwise raas dedups on (candidate_id, job_requisition_id). */
-  candidate_match_result_id?: string;
+
+  // ── RoboHire /match-resume 实际返回的 camelCase 字段 ──
+  resumeAnalysis?: Record<string, unknown>;
+  jdAnalysis?: Record<string, unknown>;
+  skillMatch?: Record<string, unknown>;
+  skillMatchScore?: Record<string, unknown> | number;
+  experienceMatch?: Record<string, unknown>;
+  experienceValidation?: Record<string, unknown>;
+  candidatePotential?: Record<string, unknown>;
+  transferableSkills?: unknown[];
+  experienceBreakdown?: Record<string, unknown>;
+  hardRequirementGaps?: unknown[];
+  overallMatchScore?: Record<string, unknown> | number;
+  overallFit?: Record<string, unknown>;
+  recommendations?: Record<string, unknown>;
+  suggestedInterviewQuestions?: Record<string, unknown>;
+  areasToProbeDeeper?: unknown[];
+  preferenceAlignment?: Record<string, unknown>;
+  candidateSummary?: Record<string, unknown>;
+
+  // ── 透传 RoboHire requestId 给 RAAS 做跨服务 trace ──
+  robohire_request_id?: string;
+  /** RoboHire upstream requestId (alt name, 同义) */
+  requestId?: string;
+  /** RAAS 那边 LLM 输出的归档名, 透传方便审计 */
+  savedAs?: string;
+
+  // RoboHire 未来加新字段从这里兜底, 不破类型
+  [key: string]: unknown;
 };
 
 export type SaveMatchResultsInput =
@@ -590,11 +739,24 @@ export async function getRequirementDetail(
 export type RequirementsAgentViewItem = Record<string, unknown>;
 
 export type GetRequirementsQuery = {
+  /**
+   * 必传 — 招聘人员 employee_id (per partner 2026-05-08 接口约定:
+   *   `GET /api/v1/requirements/agent-view?claimer_employee_id=EMP001`)
+   */
   claimer_employee_id?: string;
+
+  // ── 以下字段在新版 agent-view 签名里**不再使用**, 由 partner 端
+  // 内部按 agent-view 语义决定. 类型保留只为旧调用点向前兼容,
+  // 实际 query 不应该再传. ──
+  /** @deprecated partner 内部决定, 不再接受 query 参数 */
   scope?: 'claimed' | 'watched' | 'mine';
+  /** @deprecated partner 内部决定 */
   status?: string;
+  /** @deprecated partner 内部决定 */
   client_id?: string;
+  /** @deprecated partner 内部决定 */
   page?: number;
+  /** @deprecated partner 内部决定 */
   page_size?: number;
 };
 

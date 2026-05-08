@@ -85,20 +85,28 @@ export const matchResumeAgent = inngest.createFunction(
     }
 
     // ── 3. 调 RAAS API 拿招聘人员的在招需求列表 ──────────────
+    //
+    // 接口签名 (per partner 2026-05-08):
+    //   GET /api/v1/requirements/agent-view?claimer_employee_id=EMP001
+    //
+    // 只传 claimer_employee_id, 其他过滤逻辑 (scope/status/page_size)
+    // 由 partner 端按 agent-view 语义内部决定 (典型: 只返回 claimer 名下
+    // 在招的需求, 默认分页). 我们不再传额外参数.
     const requirements = await step.run('list-requirements', async () => {
       try {
         const r = await getRequirementsAgentView(
-          {
-            claimer_employee_id: employeeId,
-            scope: 'claimed',
-            status: 'recruiting',
-            page_size: 100,
-          },
+          { claimer_employee_id: employeeId },
           { traceId },
         );
-        const matchable = (r.items ?? []).filter(hasMatchableContent);
+        const total = r.items?.length ?? 0;
+        // 双层过滤:
+        //   1) isRecruitingStatus — 只跑招聘中 JD (兜底, 防 partner 返回非 recruiting)
+        //   2) hasMatchableContent — 必须有 job_responsibility / job_requirement / must_have_skills
+        const recruiting = (r.items ?? []).filter(isRecruitingStatus);
+        const matchable = recruiting.filter(hasMatchableContent);
         logger.info(
-          `[${AGENT_NAME}] RAAS returned ${r.items?.length ?? 0} requirement(s); ${matchable.length} matchable`,
+          `[${AGENT_NAME}] RAAS returned ${total} requirement(s); ` +
+            `${recruiting.length} recruiting; ${matchable.length} matchable`,
         );
         return matchable;
       } catch (e) {
@@ -188,21 +196,30 @@ export const matchResumeAgent = inngest.createFunction(
       }
 
       // 4b. 调 RAAS /api/v1/match-results 持久化 (source="need_interview")
+      //
+      // doc §4.6 sync-generated 同样的 spread 写法 — RoboHire /match-resume
+      // 实际返回 20+ 字段 (overallMatchScore / skillMatch / experienceMatch /
+      // jdAnalysis / candidatePotential / suggestedInterviewQuestions / ...).
+      // 直接 ...matchResult.data 整段透传, 让 RAAS 端按 schema 挑字段写库.
+      // 不要 cherry-pick (之前漏了 14+ 字段 → match_analysis 列空着的根因).
       await step.run(`save-match-${stepKey}`, async () => {
         try {
           const r = await saveMatchResults(
             {
+              // a) RoboHire /match-resume data 整段 spread (camelCase 全字段)
+              //    必须放在最前面 — IDs 之类的 anchor 在后面 override,
+              //    防 RoboHire 未来加同名字段 (例如 candidate_id) 把
+              //    我们的 anchor 覆盖.
+              ...(matchResult.data as Record<string, unknown>),
+              // b) raas 关联 (必带, 永远以这里为准)
               source: 'need_interview',
               candidate_id: candidateId ?? undefined,
               upload_id: uploadId ?? undefined,
               job_requisition_id: jrid,
               client_id: pickClientId(req),
-              matchScore: matchResult.data.matchScore,
-              matchAnalysis: matchResult.data.matchAnalysis,
-              mustHaveAnalysis: matchResult.data.mustHaveAnalysis,
-              niceToHaveAnalysis: matchResult.data.niceToHaveAnalysis,
-              summary: matchResult.data.summary,
-              recommendation: matchResult.data.recommendation,
+              // c) 跨服务 trace 透传
+              robohire_request_id: matchResult.requestId,
+              savedAs: matchResult.savedAs,
             },
             { traceId },
           );
@@ -397,6 +414,41 @@ function hasMatchableContent(req: RequirementsAgentViewItem): boolean {
   const hasReq = !!(r.job_requirement && String(r.job_requirement).trim());
   const hasMustHave = Array.isArray(r.must_have_skills) && r.must_have_skills.length > 0;
   return hasResp || hasReq || hasMustHave;
+}
+
+/**
+ * 只对"招聘中"状态的 JD 跑 match.
+ *
+ * agent-view 新签名 (claimer_employee_id 单参数) 把过滤逻辑收回 partner
+ * 内部, 我们仍加一道客户端兜底过滤 — 万一 partner 那边返回了非 recruiting
+ * 状态的 JD (草稿 / 待发布 / 已关闭), 不浪费 RoboHire match 配额.
+ *
+ * 状态字段名 partner 文档没明说, 这里覆盖几个常见位:
+ *   status / hc_status / requisition_status / spec_status / job_requisition_status
+ *
+ * 如果 item 完全没有 status 字段 → 默认 include (信任 agent-view 已 curated).
+ * 有 status 字段时, 仅 recruiting / 招聘中 / active 才 include.
+ */
+function isRecruitingStatus(req: RequirementsAgentViewItem): boolean {
+  const r = req as Record<string, any>;
+  const candidates = [
+    r.status,
+    r.hc_status,
+    r.requisition_status,
+    r.spec_status,
+    r.job_requisition_status,
+  ];
+  // 找第一个有值的 status 字段; 全都缺 → 默认 include
+  let raw: unknown = undefined;
+  for (const c of candidates) {
+    if (c != null && String(c).trim() !== '') {
+      raw = c;
+      break;
+    }
+  }
+  if (raw === undefined) return true;
+  const s = String(raw).toLowerCase().trim();
+  return s === 'recruiting' || s === '招聘中' || s === 'active' || s === 'open';
 }
 
 function sanitizeStepKey(s: string): string {

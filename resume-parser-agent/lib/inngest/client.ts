@@ -137,11 +137,50 @@ export type RequirementLoggedData = {
   };
 };
 
-// JD_GENERATED (AO → RAAS)：partner-canonical 15 字段 + AO bookkeeping
+// JD_GENERATED (AO → RAAS)：
+//
+// doc v5 §4.6 写法是直接 spread RoboHire generate-jd 的 data —— 我们的
+// JD_GENERATED.payload 也跟 sync-generated 的 body 形态保持一致：
+//   1. 整段 spread RoboHire camelCase data (title/description/qualifications/
+//      hardRequirements/niceToHave/interviewRequirements/evaluationRules/benefits/
+//      salaryMin/Max/Currency/Period/Text/headcount/experienceLevel/education/
+//      employmentType/location 等 21 字段)
+//   2. 叠加 raas snake_case 增强字段（must_have_skills / work_years / city array /
+//      negative_requirement / language_requirements 等 —— 来自 RAAS requirement 详情）
+//   3. partner-canonical normalized 字段（posting_title / posting_description /
+//      salary_range / city array 兜底）
+//   4. AO bookkeeping (jd_id / claimer_employee_id / generator_version / ...)
+//
+// `[key: string]: unknown` 兜底允许 RoboHire 未来加新 camelCase 字段时不破类型。
 export type JdGeneratedPayload = {
-  // 15 partner spec fields
+  // ── raas 关联（partner 必读）──
   job_requisition_id: string;
   client_id: string | null;
+
+  // ── RoboHire generate-jd 原始 camelCase 字段（spread 自 jdData，全部可选）──
+  title?: string;
+  description?: string;          // ★ JD 正文 markdown，§4.6 必填语义
+  qualifications?: string;       // 任职要求 markdown
+  hardRequirements?: string;     // 硬性要求 markdown
+  niceToHave?: string;           // 加分项 markdown
+  interviewRequirements?: string;
+  evaluationRules?: string;
+  benefits?: string;
+  salaryMin?: string | number;
+  salaryMax?: string | number;
+  salaryCurrency?: string;
+  salaryPeriod?: string;
+  salaryText?: string;
+  headcount?: string | number;
+  experienceLevel?: string;
+  education?: string;
+  employmentType?: string;
+  location?: string;
+  workType?: string;
+  companyName?: string;
+  department?: string;
+
+  // ── partner-canonical normalized snake_case (与 sync-generated body 对齐) ──
   posting_title: string;
   posting_description: string;
   city: string[];
@@ -157,17 +196,17 @@ export type JdGeneratedPayload = {
   language_requirements: string;
   expected_level: string;
 
-  // 发布渠道用的 2 段独立字段
+  // ── 发布渠道用的 2 段独立字段 ──
   responsibility: string;
   requirement: string;
 
-  // bookkeeping
+  // ── bookkeeping ──
   jd_id: string;
   claimer_employee_id: string | null;
   hsm_employee_id: string | null;
   client_job_id: string | null;
 
-  // 诊断字段（RAAS 可忽略）
+  // ── 诊断字段（RAAS 可忽略）──
   search_keywords: string[];
   quality_score: number;
   quality_suggestions: string[];
@@ -175,6 +214,9 @@ export type JdGeneratedPayload = {
   generator_version: string;
   generator_model: string;
   generated_at: string;
+
+  // RoboHire 未来加的 camelCase 字段从这里兜底，不破类型
+  [key: string]: unknown;
 };
 
 export type JdGeneratedEnvelope = {

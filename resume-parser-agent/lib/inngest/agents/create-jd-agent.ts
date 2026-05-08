@@ -238,13 +238,49 @@ export const createJdAgent = inngest.createFunction(
     });
 
     // ── 6. emit JD_GENERATED (cascade 触发，不再依赖订阅入库) ──
+    //
+    // doc v5 §4.6 写法：直接 spread RoboHire generate-jd 的 data。我们的
+    // JD_GENERATED.payload 跟我们调 sync-generated 的 body 形态保持一致 ——
+    // 整段 spread jdData (description / qualifications / hardRequirements /
+    // niceToHave / interviewRequirements / evaluationRules / benefits /
+    // salaryMin / salaryMax / headcount / experienceLevel / education / location /
+    // employmentType / workType / companyName / department / salaryCurrency /
+    // salaryPeriod / salaryText / title 等 21 字段全部带过去)，然后叠
+    // partner-canonical normalized snake_case 字段做兜底/转格式 (city array /
+    // salary_range / posting_description / 数值化 work_years 等)。
+    //
+    // jdData 里的诊断字段 (searchKeywords / qualityScore / qualitySuggestions /
+    // marketCompetitiveness) 也通过 spread 自动透传到 search_keywords 等
+    // snake_case key 的同名 normalized field 之上 —— 我们再读一遍 jdData
+    // 里对应的 camelCase 值做 normalized 兜底。
+    const jdAny = jdData as Record<string, unknown>;
+    const searchKeywords = Array.isArray(jdAny.searchKeywords)
+      ? (jdAny.searchKeywords as string[])
+      : [];
+    const qualityScore =
+      typeof jdAny.qualityScore === 'number' ? (jdAny.qualityScore as number) : 0;
+    const qualitySuggestions = Array.isArray(jdAny.qualitySuggestions)
+      ? (jdAny.qualitySuggestions as string[])
+      : [];
+    const marketCompetitiveness =
+      jdAny.marketCompetitiveness === '高' ||
+      jdAny.marketCompetitiveness === '中' ||
+      jdAny.marketCompetitiveness === '低'
+        ? (jdAny.marketCompetitiveness as '高' | '中' | '低')
+        : '中';
+
     const outboundEnvelope: JdGeneratedEnvelope = {
       entity_type: 'JobDescription',
       entity_id: jdId,
       event_id: randomUUID(),
       payload: {
+        // a) RoboHire generate-jd data 整段 spread (camelCase 原样)。
+        //    description / qualifications / hardRequirements / niceToHave / ...
+        ...jdAny,
+        // b) raas 关联（必带）
         job_requisition_id: requisitionId,
         client_id: clientId,
+        // c) partner-canonical normalized snake_case 字段（与 sync-generated body 对齐）
         posting_title: typeof jdData.title === 'string' ? jdData.title : '未命名岗位',
         posting_description: typeof jdData.description === 'string' ? jdData.description : '',
         city: pickCityFromBoth(requirement, jdData) ?? [],
@@ -283,15 +319,17 @@ export const createJdAgent = inngest.createFunction(
           typeof jdData.qualifications === 'string' ? jdData.qualifications : '',
         requirement:
           typeof jdData.hardRequirements === 'string' ? jdData.hardRequirements : '',
+        // d) bookkeeping
         jd_id: jdId,
         claimer_employee_id:
           (specification?.recruiter_employee_id as string | undefined) ?? null,
         hsm_employee_id: (specification?.hsm_employee_id as string | undefined) ?? null,
         client_job_id: (requirement.client_job_id as string | undefined) ?? null,
-        search_keywords: [],
-        quality_score: 0,
-        quality_suggestions: [],
-        market_competitiveness: '中',
+        // e) 诊断字段（从 jdData 里透传，不再硬编码）
+        search_keywords: searchKeywords,
+        quality_score: qualityScore,
+        quality_suggestions: qualitySuggestions,
+        market_competitiveness: marketCompetitiveness,
         generator_version: GENERATOR_VERSION,
         generator_model: 'raas-api/generate-jd',
         generated_at: new Date().toISOString(),
