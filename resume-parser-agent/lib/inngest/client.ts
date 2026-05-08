@@ -78,26 +78,23 @@ export type ResumeProcessedData = {
   size: number | null;
   sourceEventName: string | null;
   receivedAt: string;
-  // 解析结果
-  candidate: CandidateNested;
-  candidate_expectation: CandidateExpectationNested;
-  resume: ResumeNested;
-  runtime: RuntimeNested;
+  // 解析结果（Workflow A 之后保留为空对象 — RAAS 处理 schema 映射）
+  candidate: CandidateNested | Record<string, never>;
+  candidate_expectation: CandidateExpectationNested | Record<string, never>;
+  resume: ResumeNested | Record<string, never>;
+  runtime: RuntimeNested | Record<string, never>;
   // 元数据
   parsedAt: string;
   parserVersion: string;
   // ── matchResume agent 用到的字段 ──
-  // upload_id 由上游 RAAS 在 RESUME_PROCESSED payload 里带过来，matchResume
-  // 需要把它原样回写到 MATCH_* 事件里供 RAAS 反查 candidate。
   upload_id?: string;
-  // employee_id 是 RAAS 招聘人员（claimer）的 ID。matchResume 用它去
-  // RAAS Internal API 查这个 recruiter 名下所有在招需求。可能是 snake_case
-  // (RAAS canonical) 或 camelCase (本仓库历史)，consumer 两个都要试。
   employee_id?: string;
-  // parsed.data 是 RoboHire /parse-resume 的原始结构化结果。matchResume
-  // 直接把它拼成 resume text 喂给 /match-resume。当 RESUME_PROCESSED
-  // 没带 parsed 时，consumer 会回退到 candidate / resume / runtime 嵌套字段。
   parsed?: { data?: Record<string, unknown> };
+  // ── Workflow A: 持久化产物 ──
+  // resume-parser-agent 调 saveCandidate 后拿到的 RAAS DB id，下游
+  // matcher 不必再反查就能用 candidate_id 调 saveMatchResults。
+  candidate_id?: string;
+  resume_id?: string;
 };
 
 // ─── §3.3 匹配输出事件 ─────────────────────────────────────

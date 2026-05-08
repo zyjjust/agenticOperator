@@ -1,37 +1,30 @@
 // matchResume agent — Workflow node 10.
 //
-// Subscribes to RESUME_PROCESSED, fetches every requirement claimed by the
-// recruiter (employee_id from the inbound payload) via RAAS Internal API,
-// then loops and scores the resume against each via RoboHire /match-resume.
-// Each iteration emits a MATCH_PASSED_NEED_INTERVIEW event whose payload is
-// `{ upload_id, job_requisition_id, ...full RoboHire response }`.
+// Subscribes RESUME_PROCESSED → 通过 RAAS API Server 取需求列表 → 循环调
+// /api/v1/match-resume → 持久化到 RAAS DB (POST /api/v1/match-results) →
+// emit MATCH_PASSED_NEED_INTERVIEW (cascade trigger).
 //
-// Inbound:  RESUME_PROCESSED { upload_id, employee_id, parsed: { data }, ... }
-// Outbound: MATCH_PASSED_NEED_INTERVIEW (one per matched requirement)
+// 跟之前版本的差别 (Workflow A, 2026-05-08):
+//   ❌ 不再调 RoboHire /match-resume 直连 (lib/robohire.ts 退役)
+//   ❌ 不再调 lib/raas-internal.ts (老 internal API path 退役)
+//   ✅ 通过 raas-api-client 调:
+//        - getRequirementsAgentView (列需求)
+//        - matchResume               (打分)
+//        - saveMatchResults          (持久化, source="need_interview")
 //
-// Behavior decisions (locked-in by user):
-//   - Single outcome event type (MATCH_PASSED_NEED_INTERVIEW) — no score-
-//     based fan-out to MATCH_PASSED_NO_INTERVIEW / MATCH_FAILED.
-//   - When the recruiter has 0 matchable requirements → return silently,
-//     emit nothing.
-//   - JD text comes ONLY from RAAS Internal API. No filename inference,
-//     no local DB cache, no LLM fallback.
+// Inbound:  RESUME_PROCESSED { upload_id, candidate_id, employee_id, parsed, ... }
+// Outbound: MATCH_PASSED_NEED_INTERVIEW (一条/JD)
 
 import { NonRetriableError } from 'inngest';
-import { flattenResumeForMatch } from '../../mappers/flatten-resume';
 import {
-  RaasInternalApiError,
-  flattenRequirementForMatch,
-  hasMatchableContent,
-  isRaasInternalApiConfigured,
-  listAllRequirements,
-  type RaasRequirement,
-} from '../../raas-internal';
-import {
-  RoboHireNonRetryableError,
-  matchResumeToJd,
-  type RoboHireMatchResponse,
-} from '../../robohire';
+  RaasApiError,
+  getRequirementsAgentView,
+  isRaasApiConfigured,
+  matchResume,
+  saveMatchResults,
+  type RaasMatchResumeData,
+  type RequirementsAgentViewItem,
+} from '../../raas-api-client';
 import {
   inngest,
   type MatchPassedNeedInterviewData,
@@ -49,40 +42,36 @@ export const matchResumeAgent = inngest.createFunction(
   },
   { event: 'RESUME_PROCESSED' },
   async ({ event, step, logger }) => {
-    // RESUME_PROCESSED 在两种 shape 下都要 work：
-    //   A) 平铺 — 我们自己 parser 发出的：{ upload_id, employee_id, parsed, ... }
-    //   B) envelope — RAAS-canonical 的：{ entity_id, entity_type, event_id,
-    //      payload: { upload_id, employee_id, parsed, ... }, trace }
-    // 这里把 envelope 的 payload 拆出来，与平铺字段合并，让下游统一处理。
     const data = unwrapResumeProcessedEvent(event.data);
+    const traceId = getTraceId(event.data);
 
-    // ── 1. 抽取并保存 upload_id / employee_id ──────────────
-    // RESUME_PROCESSED 在不同上游版本里 employee_id 可能是 snake_case
-    // (RAAS canonical) 或 camelCase (本仓库 parser 历史)，两个都试。
+    // ── 1. 抽取必要 anchor ─────────────────────────────────
     const uploadId = pickUploadId(data);
+    const candidateId = pickCandidateId(data);
     const employeeId = pickEmployeeId(data);
 
-    if (!uploadId) {
+    if (!uploadId && !candidateId) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] RESUME_PROCESSED missing upload_id — cannot anchor MATCH_* events. data keys=${Object.keys(data).join(',')}`,
+        `[${AGENT_NAME}] RESUME_PROCESSED 缺 upload_id 和 candidate_id — 至少需要其一才能调 saveMatchResults。data keys=${Object.keys(data).join(',')}`,
       );
     }
     if (!employeeId) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] RESUME_PROCESSED missing employee_id / employeeId — cannot resolve recruiter's requirements`,
+        `[${AGENT_NAME}] RESUME_PROCESSED 缺 employee_id / claimer_employee_id — 无法定位招聘人员名下的需求`,
       );
     }
-    if (!isRaasInternalApiConfigured()) {
+    if (!isRaasApiConfigured()) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] RAAS_INTERNAL_API_URL / RAAS_AGENT_API_KEY env vars not set`,
+        `[${AGENT_NAME}] RAAS_API_BASE_URL / AGENT_API_KEY env 未配置`,
       );
     }
 
     logger.info(
-      `[${AGENT_NAME}] received RESUME_PROCESSED · upload_id=${uploadId} employee_id=${employeeId} filename="${data.filename ?? '—'}"`,
+      `[${AGENT_NAME}] received RESUME_PROCESSED · upload_id=${uploadId ?? '—'} ` +
+        `candidate_id=${candidateId ?? '—'} employee_id=${employeeId}`,
     );
 
-    // ── 2. resumeText：优先用 payload.parsed，缺失时回退到结构化字段 ──
+    // ── 2. 构造 resume 文本 (喂给 match-resume) ─────────────
     const resumeText = await step.run('build-resume-text', async () => {
       const text = buildResumeText(data);
       logger.info(`[${AGENT_NAME}] built resume text · ${text.length} chars`);
@@ -91,33 +80,45 @@ export const matchResumeAgent = inngest.createFunction(
 
     if (!resumeText.trim()) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] resume text is empty — neither parsed nor structured fields had usable content`,
+        `[${AGENT_NAME}] resume text empty — payload.parsed.data 没有可用内容`,
       );
     }
 
-    // ── 3. 拉 RAAS 这位招聘人员名下的全部在招需求 ──────────
+    // ── 3. 调 RAAS API 拿招聘人员的在招需求列表 ──────────────
     const requirements = await step.run('list-requirements', async () => {
-      const all = await listAllRequirements({
-        claimerEmployeeId: employeeId,
-        scope: 'claimed',
-        status: 'recruiting',
-        pageSize: 100,
-      });
-      const matchable = all.filter(hasMatchableContent);
-      logger.info(
-        `[${AGENT_NAME}] RAAS returned ${all.length} requirement(s); ${matchable.length} matchable`,
-      );
-      return matchable;
+      try {
+        const r = await getRequirementsAgentView(
+          {
+            claimer_employee_id: employeeId,
+            scope: 'claimed',
+            status: 'recruiting',
+            page_size: 100,
+          },
+          { traceId },
+        );
+        const matchable = (r.items ?? []).filter(hasMatchableContent);
+        logger.info(
+          `[${AGENT_NAME}] RAAS returned ${r.items?.length ?? 0} requirement(s); ${matchable.length} matchable`,
+        );
+        return matchable;
+      } catch (e) {
+        if (e instanceof RaasApiError && e.isClientError) {
+          throw new NonRetriableError(
+            `RAAS getRequirementsAgentView 4xx: ${e.code} ${e.message}`,
+          );
+        }
+        throw e;
+      }
     });
 
-    // 空集 → 不 emit、直接返回 (per user spec Q2 = A)
     if (requirements.length === 0) {
       logger.warn(
-        `[${AGENT_NAME}] employee_id=${employeeId} has 0 matchable requirements — emitting nothing`,
+        `[${AGENT_NAME}] employee_id=${employeeId} 名下 0 条 matchable 需求，不 emit`,
       );
       return {
         ok: true,
         upload_id: uploadId,
+        candidate_id: candidateId,
         employee_id: employeeId,
         matched_count: 0,
         emitted_count: 0,
@@ -125,7 +126,7 @@ export const matchResumeAgent = inngest.createFunction(
       };
     }
 
-    // ── 4. 循环：每条需求一次 RoboHire match → emit 一条事件 ──
+    // ── 4. 循环每条需求做匹配 + 持久化 + emit ──────────────
     const summaries: Array<{
       job_requisition_id: string;
       ok: boolean;
@@ -134,79 +135,114 @@ export const matchResumeAgent = inngest.createFunction(
     }> = [];
 
     for (const req of requirements) {
-      const stepKey = sanitizeStepKey(req.job_requisition_id);
+      const jrid = pickRequisitionId(req);
+      if (!jrid) {
+        logger.warn(`[${AGENT_NAME}] requirement 没有 job_requisition_id，跳过`);
+        continue;
+      }
 
-      // 单个需求的 match + emit 包成两个 step.run，让 Inngest 的
-      // memoization 能在重试时跳过已成功的步骤。
+      const stepKey = sanitizeStepKey(jrid);
+
+      // 4a. 调 RAAS /api/v1/match-resume (透传 RoboHire)
       const matchResult = await step.run(
         `match-${stepKey}`,
-        async (): Promise<{ ok: true; response: RoboHireMatchResponse } | { ok: false; error: string }> => {
+        async (): Promise<
+          | { ok: true; data: RaasMatchResumeData; requestId?: string; savedAs?: string }
+          | { ok: false; error: string }
+        > => {
           const jdText = flattenRequirementForMatch(req);
           logger.info(
-            `[${AGENT_NAME}] calling RoboHire /match-resume · job_req=${req.job_requisition_id} title="${req.client_job_title}" jd_chars=${jdText.length}`,
+            `[${AGENT_NAME}] calling RAAS /match-resume · job_req=${jrid} jd_chars=${jdText.length}`,
           );
           try {
-            const r = await matchResumeToJd({
-              resume: resumeText,
-              jd: jdText,
-            });
-            logger.info(
-              `[${AGENT_NAME}] RoboHire OK · job_req=${req.job_requisition_id} score=${r.data?.matchScore} rec=${r.data?.recommendation} requestId=${r.requestId}`,
+            const r = await matchResume(
+              { resume: resumeText, jd: jdText },
+              { traceId },
             );
-            return { ok: true as const, response: r };
+            logger.info(
+              `[${AGENT_NAME}] RAAS match OK · job_req=${jrid} score=${r.data?.matchScore} rec=${r.data?.recommendation} requestId=${r.requestId}`,
+            );
+            return {
+              ok: true as const,
+              data: r.data,
+              requestId: r.requestId,
+              savedAs: r.savedAs,
+            };
           } catch (e) {
-            // Non-retryable (4xx besides 429) → log + skip this JD,
-            // continue with the rest. Don't bubble to NonRetriableError
-            // because we don't want to abort the whole roster on one
-            // bad JD.
-            if (e instanceof RoboHireNonRetryableError) {
+            if (e instanceof RaasApiError && e.isClientError) {
+              // 4xx (除 429) → 跳过这条需求，不影响其他 JD
               logger.error(
-                `[${AGENT_NAME}] RoboHire NON-RETRYABLE · job_req=${req.job_requisition_id} status=${e.status} — skipping`,
+                `[${AGENT_NAME}] RAAS match 4xx · job_req=${jrid} code=${e.code} — skipping`,
               );
-              return { ok: false as const, error: e.message };
+              return { ok: false as const, error: `${e.code}: ${e.message}` };
             }
-            // Retryable (5xx / 429 / network) → throw inside step.run so
-            // Inngest retries this single step (not the whole function).
+            // 5xx / 429 / 网络 → 让 step.run 重试
             throw e;
           }
         },
       );
 
       if (!matchResult.ok) {
-        summaries.push({
-          job_requisition_id: req.job_requisition_id,
-          ok: false,
-          error: matchResult.error,
-        });
+        summaries.push({ job_requisition_id: jrid, ok: false, error: matchResult.error });
         continue;
       }
 
-      const response = matchResult.response;
+      // 4b. 调 RAAS /api/v1/match-results 持久化 (source="need_interview")
+      await step.run(`save-match-${stepKey}`, async () => {
+        try {
+          const r = await saveMatchResults(
+            {
+              source: 'need_interview',
+              candidate_id: candidateId ?? undefined,
+              upload_id: uploadId ?? undefined,
+              job_requisition_id: jrid,
+              client_id: pickClientId(req),
+              matchScore: matchResult.data.matchScore,
+              matchAnalysis: matchResult.data.matchAnalysis,
+              mustHaveAnalysis: matchResult.data.mustHaveAnalysis,
+              niceToHaveAnalysis: matchResult.data.niceToHaveAnalysis,
+              summary: matchResult.data.summary,
+              recommendation: matchResult.data.recommendation,
+            },
+            { traceId },
+          );
+          logger.info(
+            `[${AGENT_NAME}] saveMatchResults OK · job_req=${jrid} ` +
+              `result=${JSON.stringify(r).slice(0, 120)}`,
+          );
+          return r;
+        } catch (e) {
+          if (e instanceof RaasApiError && e.isClientError) {
+            throw new NonRetriableError(
+              `RAAS saveMatchResults 4xx: ${e.code} ${e.message}`,
+            );
+          }
+          throw e;
+        }
+      });
 
-      // payload = { upload_id, job_requisition_id, ...full RoboHire response }
+      // 4c. emit MATCH_PASSED_NEED_INTERVIEW (cascade)
       const payload: MatchPassedNeedInterviewData = {
-        upload_id: uploadId,
-        job_requisition_id: req.job_requisition_id,
-        success: response.success,
-        data: response.data as Record<string, unknown> | undefined,
-        requestId: response.requestId,
-        savedAs: response.savedAs,
-        error: response.error,
+        upload_id: uploadId ?? '',
+        job_requisition_id: jrid,
+        success: true,
+        data: matchResult.data as unknown as Record<string, unknown>,
+        requestId: matchResult.requestId,
+        savedAs: matchResult.savedAs,
       };
-
       await step.sendEvent(`emit-match-${stepKey}`, {
         name: 'MATCH_PASSED_NEED_INTERVIEW',
         data: payload,
       });
 
       summaries.push({
-        job_requisition_id: req.job_requisition_id,
+        job_requisition_id: jrid,
         ok: true,
-        requestId: response.requestId,
+        requestId: matchResult.requestId,
       });
 
       logger.info(
-        `[${AGENT_NAME}] ✅ emitted MATCH_PASSED_NEED_INTERVIEW · upload_id=${uploadId} job_req=${req.job_requisition_id}`,
+        `[${AGENT_NAME}] ✅ emitted MATCH_PASSED_NEED_INTERVIEW · upload_id=${uploadId} job_req=${jrid}`,
       );
     }
 
@@ -214,6 +250,7 @@ export const matchResumeAgent = inngest.createFunction(
     return {
       ok: true,
       upload_id: uploadId,
+      candidate_id: candidateId,
       employee_id: employeeId,
       matched_count: requirements.length,
       emitted_count: emitted,
@@ -226,27 +263,10 @@ export const matchResumeAgent = inngest.createFunction(
 // Helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/**
- * RESUME_PROCESSED comes in two shapes:
- *   A) flat — our own parser: { upload_id, employee_id, parsed, ... }
- *   B) envelope — RAAS canonical: { entity_id, entity_type, event_id,
- *      payload: {...flat fields...}, trace }
- * Detect envelope by presence of a `payload` object and return the
- * inner fields merged with envelope-level metadata. Flat input is
- * returned unchanged.
- */
-function unwrapResumeProcessedEvent(raw: unknown): ResumeProcessedData {
-  if (!raw || typeof raw !== 'object') {
-    return raw as ResumeProcessedData;
-  }
+function unwrapResumeProcessedEvent(raw: unknown): ResumeProcessedData & Record<string, any> {
+  if (!raw || typeof raw !== 'object') return raw as ResumeProcessedData;
   const r = raw as Record<string, unknown>;
-  if (
-    r.payload &&
-    typeof r.payload === 'object' &&
-    !Array.isArray(r.payload)
-  ) {
-    // Envelope shape — promote payload fields, keep envelope metadata
-    // alongside (in case downstream wants entity_id / trace).
+  if (r.payload && typeof r.payload === 'object' && !Array.isArray(r.payload)) {
     return {
       ...(r.payload as Record<string, unknown>),
       _envelope_entity_id: r.entity_id,
@@ -258,21 +278,8 @@ function unwrapResumeProcessedEvent(raw: unknown): ResumeProcessedData {
   return raw as ResumeProcessedData;
 }
 
-/**
- * Pull `upload_id` from the inbound event payload.
- *
- * Try the explicit field first (only present in our own parser's output
- * today), then fall back to RAAS-canonical anchors that uniquely identify
- * the resume-upload row: `etag` and `object_key`. RAAS does NOT include
- * a literal `upload_id` field on RESUME_PROCESSED — they reverse-look up
- * candidate by (bucket, object_key, etag) instead.
- */
 function pickUploadId(
-  data: ResumeProcessedData & {
-    uploadId?: string;
-    object_key?: string;
-    objectKey?: string;
-  },
+  data: ResumeProcessedData & { uploadId?: string; object_key?: string; objectKey?: string },
 ): string | null {
   const candidates: Array<string | null | undefined> = [
     data.upload_id,
@@ -287,16 +294,13 @@ function pickUploadId(
   return null;
 }
 
-/**
- * Pull recruiter `employee_id`. RAAS canonical uses `claimer_employee_id`
- * (the recruiter who CLAIMED the requirement), distinct from `operator_id`
- * (the human who triggered the action). Order:
- *   1. claimer_employee_id  — RAAS canonical
- *   2. employee_id          — alternative snake_case
- *   3. employeeId           — this repo's historical camelCase
- *   4. operator_id          — fallback to action-triggerer
- *   5. RAAS_DEFAULT_EMPLOYEE_ID env — testing fallback
- */
+function pickCandidateId(data: ResumeProcessedData): string | null {
+  if (typeof data.candidate_id === 'string' && data.candidate_id.trim()) {
+    return data.candidate_id.trim();
+  }
+  return null;
+}
+
 function pickEmployeeId(
   data: ResumeProcessedData & {
     claimer_employee_id?: string | null;
@@ -316,14 +320,30 @@ function pickEmployeeId(
   return null;
 }
 
+function pickRequisitionId(req: RequirementsAgentViewItem): string | null {
+  const cands: unknown[] = [
+    (req as any).job_requisition_id,
+    (req as any).requisition_id,
+    (req as any).job_id,
+    (req as any).id,
+  ];
+  for (const c of cands) {
+    if (typeof c === 'string' && c.trim().length > 0) return c.trim();
+  }
+  return null;
+}
+
+function pickClientId(req: RequirementsAgentViewItem): string | undefined {
+  const cands: unknown[] = [(req as any).client_id, (req as any).clientId];
+  for (const c of cands) {
+    if (typeof c === 'string' && c.trim().length > 0) return c.trim();
+  }
+  return undefined;
+}
+
 /**
- * Build the `resume` plain-text input for RoboHire /match-resume.
- *
- * Priority:
- *   1. payload.parsed.data — RoboHire-shape JSON, stringified
- *   2. payload.parsed      — already a string OR object
- *   3. flattenResumeForMatch(payload) — derived from candidate / resume /
- *      runtime structured fields (this repo's current parser output)
+ * Build resume text for /match-resume input.
+ * Priority: parsed.data (stringify) > parsed (stringify) > "" (empty)
  */
 function buildResumeText(data: ResumeProcessedData): string {
   const parsed = data.parsed;
@@ -335,15 +355,60 @@ function buildResumeText(data: ResumeProcessedData): string {
     }
     return JSON.stringify(parsed, null, 2);
   }
-  // Fallback — current parser emits structured fields, no parsed wrapper.
-  return flattenResumeForMatch(data);
+  return '';
 }
 
-/** Inngest step IDs must be stable; sanitize requisition IDs to be safe. */
+/**
+ * Flatten a RAAS requirement view item into JD text for /match-resume.
+ * RequirementsAgentViewItem 字段不固定 (RAAS 可能演进)，用宽松取字段策略。
+ */
+function flattenRequirementForMatch(req: RequirementsAgentViewItem): string {
+  const r = req as Record<string, any>;
+  const lines: string[] = [];
+  if (r.client_job_title || r.title) {
+    lines.push(`职位: ${r.client_job_title ?? r.title}`);
+  }
+  if (r.expected_level) lines.push(`期望级别: ${r.expected_level}`);
+  if (r.work_city || r.city) lines.push(`工作城市: ${r.work_city ?? r.city}`);
+  if (r.salary_range) lines.push(`薪资范围: ${r.salary_range}`);
+  if (r.recruitment_type) lines.push(`招聘类型: ${r.recruitment_type}`);
+  if (r.interview_mode) lines.push(`面试形式: ${r.interview_mode}`);
+  if (r.work_years != null) lines.push(`\n工作年限: ${r.work_years} 年`);
+  if (r.degree_requirement) lines.push(`学历要求: ${r.degree_requirement}`);
+  if (r.education_requirement) lines.push(`专业要求: ${r.education_requirement}`);
+  if (r.language_requirements) lines.push(`语言要求: ${r.language_requirements}`);
+  if (Array.isArray(r.must_have_skills) && r.must_have_skills.length) {
+    lines.push(`\n必备技能:\n  - ${r.must_have_skills.join('\n  - ')}`);
+  }
+  if (Array.isArray(r.nice_to_have_skills) && r.nice_to_have_skills.length) {
+    lines.push(`\n加分技能:\n  - ${r.nice_to_have_skills.join('\n  - ')}`);
+  }
+  if (r.negative_requirement && r.negative_requirement !== '无') {
+    lines.push(`\n排除条件:\n${r.negative_requirement}`);
+  }
+  if (r.job_responsibility) lines.push(`\n岗位职责:\n${r.job_responsibility}`);
+  if (r.job_requirement) lines.push(`\n任职要求:\n${r.job_requirement}`);
+  return lines.join('\n');
+}
+
+function hasMatchableContent(req: RequirementsAgentViewItem): boolean {
+  const r = req as Record<string, any>;
+  const hasResp = !!(r.job_responsibility && String(r.job_responsibility).trim());
+  const hasReq = !!(r.job_requirement && String(r.job_requirement).trim());
+  const hasMustHave = Array.isArray(r.must_have_skills) && r.must_have_skills.length > 0;
+  return hasResp || hasReq || hasMustHave;
+}
+
 function sanitizeStepKey(s: string): string {
   return s.replace(/[^A-Za-z0-9-]/g, '-').slice(0, 80) || 'unknown';
 }
 
-// Re-export for tests / other consumers that might want them.
-export type { RaasRequirement };
-export { RaasInternalApiError };
+function getTraceId(eventData: unknown): string | undefined {
+  if (!eventData || typeof eventData !== 'object') return undefined;
+  const r = eventData as Record<string, any>;
+  const t = r.trace;
+  if (t && typeof t === 'object' && typeof t.trace_id === 'string' && t.trace_id) {
+    return t.trace_id;
+  }
+  return undefined;
+}
