@@ -399,7 +399,129 @@ export async function saveMatchResults(
   return { ...(body.data as SaveMatchResultsResponse), requestId: body.requestId, traceId: body._traceId };
 }
 
-// ─── Read-only: requirements/agent-view ─────────────────────────────
+// ─── Read-only: requirements/:id (单条详情) ─────────────────────────
+//
+// 跟 agent-view (list) 不同的是这条返回**单条 requisition 的全部字段** +
+// specification + siblings + latest_task / analysis 等一坨上下文。agent
+// 在 REQUIREMENT_LOGGED 事件里只拿到 entity_id (= job_requisition_id)，
+// 后续详情全部走这条 GET 拉取，RAAS 不再 push 到 event payload 里。
+
+/** Job_Requisition 主对象，全字段。RAAS 端字段较多，这里给常用字段 + 兜底 [k:string]. */
+export type RaasRequirement = {
+  job_requisition_id: string;
+  job_requisition_specification_id?: string;
+  client_id?: string;
+  client_department_id?: string;
+  client_job_id?: string;
+  client_job_title?: string;
+  job_responsibility?: string;
+  job_requirement?: string;
+  must_have_skills?: string[];
+  nice_to_have_skills?: string[];
+  negative_requirement?: string;
+  language_requirements?: string;
+  city?: string;
+  salary_range?: string;
+  headcount?: number;
+  work_years?: number;
+  degree_requirement?: string;
+  education_requirement?: string;
+  interview_mode?: string;
+  expected_level?: string;
+  recruitment_type?: string;
+  [k: string]: unknown;
+};
+
+/** Job_Requisition_Specification 全字段 (priority / deadline / hsm_employee_id 等). */
+export type RaasRequirementSpecification = {
+  job_requisition_specification_id: string;
+  hro_service_contract_id?: string;
+  client_id?: string;
+  start_date?: string;
+  deadline?: string;
+  priority?: string;
+  is_exclusive?: boolean;
+  number_of_competitors?: number;
+  status?: string;
+  hsm_employee_id?: string;
+  recruiter_employee_id?: string;
+  [k: string]: unknown;
+};
+
+export type RaasRequirementSibling = {
+  job_requisition_id: string;
+  client_job_id?: string;
+  client_job_title?: string;
+  headcount?: number;
+  hc_status?: string;
+  competitor_application_count?: number;
+  [k: string]: unknown;
+};
+
+export type RequirementDetailResponse = RaasResponse & {
+  requirement: RaasRequirement;
+  specification: RaasRequirementSpecification | null;
+  siblings: RaasRequirementSibling[];
+  latest_task: Record<string, unknown> | null;
+  latest_analysis: Record<string, unknown> | null;
+  analysis_history: Array<Record<string, unknown>>;
+  clarification_rounds: Array<Record<string, unknown>>;
+  manual_override_history: Array<Record<string, unknown>>;
+  can_trigger_analysis: boolean;
+};
+
+/**
+ * GET /api/v1/requirements/:id — 拉单条需求的全字段详情 + spec + siblings.
+ *
+ * agent 拿到 REQUIREMENT_LOGGED 事件后，从 event.data.entity_id 取出
+ * job_requisition_id 直接调这条 endpoint 取完整数据，不再依赖 RAAS 在
+ * event payload 里塞 raw_input_data。
+ *
+ * 注意:
+ *  - id 必须 URL-encode（agent 这层用 encodeURIComponent 做，对当前
+ *    JR_xxx 形式无影响，但加上更稳）
+ *  - 鉴权: Bearer ${AGENT_API_KEY} (与其他 endpoint 一致)
+ *  - 返回 200，body 直接是 { requirement, specification, ... } —
+ *    不是 { success, data } 包装。我们的 doRequest 对没有 success 字段的
+ *    body 不抛错（只在 success:false 时抛），所以这里直接 cast。
+ */
+export async function getRequirementDetail(
+  jobRequisitionId: string,
+  opts: CommonOpts = {},
+): Promise<RequirementDetailResponse> {
+  if (!jobRequisitionId || !jobRequisitionId.trim()) {
+    throw new RaasApiError(
+      0,
+      'CLIENT',
+      'getRequirementDetail: jobRequisitionId required',
+    );
+  }
+  const path = `/api/v1/requirements/${encodeURIComponent(jobRequisitionId.trim())}`;
+  const body = await doRequest('GET', path, {}, opts);
+  return {
+    requirement: (body.requirement ?? {}) as RaasRequirement,
+    specification:
+      (body.specification as RaasRequirementSpecification | null | undefined) ?? null,
+    siblings: Array.isArray(body.siblings) ? (body.siblings as RaasRequirementSibling[]) : [],
+    latest_task: (body.latest_task as Record<string, unknown> | null | undefined) ?? null,
+    latest_analysis:
+      (body.latest_analysis as Record<string, unknown> | null | undefined) ?? null,
+    analysis_history: Array.isArray(body.analysis_history)
+      ? (body.analysis_history as Array<Record<string, unknown>>)
+      : [],
+    clarification_rounds: Array.isArray(body.clarification_rounds)
+      ? (body.clarification_rounds as Array<Record<string, unknown>>)
+      : [],
+    manual_override_history: Array.isArray(body.manual_override_history)
+      ? (body.manual_override_history as Array<Record<string, unknown>>)
+      : [],
+    can_trigger_analysis: body.can_trigger_analysis === true,
+    requestId: body.requestId,
+    traceId: body._traceId,
+  };
+}
+
+// ─── Read-only: requirements/agent-view (list) ──────────────────────
 
 export type RequirementsAgentViewItem = Record<string, unknown>;
 

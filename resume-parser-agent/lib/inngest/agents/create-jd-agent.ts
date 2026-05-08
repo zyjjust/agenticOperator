@@ -19,9 +19,12 @@ import { NonRetriableError } from 'inngest';
 import {
   RaasApiError,
   generateJd,
+  getRequirementDetail,
   isRaasApiConfigured,
   syncJdGenerated,
   type RaasGenerateJdData,
+  type RaasRequirement,
+  type RaasRequirementSpecification,
   type SyncJdInput,
 } from '../../raas-api-client';
 import { inngest, type JdGeneratedEnvelope } from '../client';
@@ -100,44 +103,73 @@ export const createJdAgent = inngest.createFunction(
     }
 
     const envelope = (event.data ?? {}) as RequirementLoggedEnvelope;
-    const payload = envelope.payload ?? (envelope as unknown as RaasRequirementPayload);
     const traceId = getTraceId(event.data);
 
-    // ── 提取关键字段 ──
-    const ids = pickIds(envelope, payload);
-    if (!ids.requisition_id) {
+    // ── 1. 从事件取 entity_id (= job_requisition_id) ──
+    // 新流程: RAAS 在事件里只放 entity_id，agent 主动调
+    // GET /api/v1/requirements/:id 拉详情。entity_id 缺失时兼容老格式
+    // (payload.raw_input_data.job_requisition_id / payload.requirement_id)。
+    const requisitionId = pickRequisitionIdFromEnvelope(envelope);
+    if (!requisitionId) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] ${event.name} 缺 requisition_id (raw_input_data.job_requisition_id 或 payload.requirement_id) — 无法关联 JobPosting`,
-      );
-    }
-    if (!ids.client_id) {
-      throw new NonRetriableError(
-        `[${AGENT_NAME}] ${event.name} 缺 client_id — POST /jd/sync-generated 必须的字段`,
+        `[${AGENT_NAME}] ${event.name} 缺 entity_id / requisition_id —— 无法调 GET /requirements/:id`,
       );
     }
 
-    // ── 拼 prompt 给 RAAS /generate-jd ──
-    const prompt = buildPrompt(payload);
+    // ── 2. 调 GET /api/v1/requirements/:id 拉完整需求详情 ──
+    const detail = await step.run(`fetch-requirement-${sanitize(requisitionId)}`, async () => {
+      try {
+        const r = await getRequirementDetail(requisitionId, { traceId });
+        logger.info(
+          `[${AGENT_NAME}] requirements/:id OK · jrid=${requisitionId} ` +
+            `title="${r.requirement.client_job_title ?? '?'}" ` +
+            `client_id=${r.requirement.client_id ?? '—'} ` +
+            `status=${r.specification?.status ?? '—'}`,
+        );
+        return r;
+      } catch (e) {
+        if (e instanceof RaasApiError && e.isClientError) {
+          throw new NonRetriableError(
+            `RAAS GET /requirements/${requisitionId} 4xx: ${e.code} ${e.message}`,
+          );
+        }
+        throw e;
+      }
+    });
+
+    const requirement = detail.requirement;
+    const specification = detail.specification;
+    const clientId = requirement.client_id ?? specification?.client_id;
+    if (!clientId) {
+      throw new NonRetriableError(
+        `[${AGENT_NAME}] requirement ${requisitionId} 缺 client_id — POST /jd/sync-generated 必填`,
+      );
+    }
+
+    // ── 3. 从详情拼 prompt 给 RAAS /generate-jd ──
+    const prompt = buildPromptFromRequirement(requirement, specification);
     if (!prompt || prompt.length < 4) {
       throw new NonRetriableError(
-        `[${AGENT_NAME}] ${event.name} 凑不出有效 prompt (raw_input_data 几乎全空)`,
+        `[${AGENT_NAME}] 拼不出有效 prompt — requirement ${requisitionId} 关键字段几乎全空`,
       );
     }
 
     logger.info(
-      `[${AGENT_NAME}] received ${event.name} · requisition=${ids.requisition_id} ` +
-        `client_id=${ids.client_id} prompt_len=${prompt.length}`,
+      `[${AGENT_NAME}] received ${event.name} · requisition=${requisitionId} ` +
+        `client_id=${clientId} prompt_len=${prompt.length}`,
     );
 
-    // ── 调 RAAS API: POST /api/v1/generate-jd ──
-    const generated = await step.run(`generate-${ids.requisition_id}`, async () => {
+    // ── 4. 调 RAAS API: POST /api/v1/generate-jd ──
+    const generated = await step.run(`generate-${sanitize(requisitionId)}`, async () => {
       try {
         const r = await generateJd(
           {
             prompt,
             language: 'zh',
-            companyName: payload.raw_input_data?.sd_org_name ?? undefined,
-            department: payload.raw_input_data?.client_department_id ?? undefined,
+            // 用 requirement 详情里的 sd_org_name (客户部门) 当 companyName/department 上下文。
+            // 没有就交给 RAAS 自己解析。
+            companyName: pickStringField(requirement, ['sd_org_name', 'client_name']),
+            department: pickStringField(requirement, ['client_department_id', 'department']),
           },
           { traceId },
         );
@@ -160,17 +192,15 @@ export const createJdAgent = inngest.createFunction(
     const jdData = generated.data;
     const jdId = `jd_${randomUUID().slice(0, 8)}_${Date.now().toString(36)}`;
 
-    // ── 调 RAAS API: POST /api/v1/jd/sync-generated ──
-    await step.run(`sync-jd-${ids.requisition_id}`, async () => {
+    // ── 5. 调 RAAS API: POST /api/v1/jd/sync-generated ──
+    await step.run(`sync-jd-${sanitize(requisitionId)}`, async () => {
       const input: SyncJdInput = {
-        job_requisition_id: ids.requisition_id!,
-        client_id: ids.client_id!,
+        job_requisition_id: requisitionId,
+        client_id: clientId,
         posting_title: typeof jdData.title === 'string' ? jdData.title : undefined,
-        posting_description: typeof jdData.description === 'string' ? jdData.description : undefined,
-        // RAAS 端可以从 jd_content 里抽 must-have / nice-to-have，所以这里
-        // 不重复字段抽取，直接把 jdData 整段塞 jd_content。
+        posting_description:
+          typeof jdData.description === 'string' ? jdData.description : undefined,
         jd_content: jdData as Record<string, unknown>,
-        // 这些是 RAAS 用来回填 JobRequisition 的额外信号。
         city: pickCity(jdData),
         salary_range: pickSalaryRange(jdData),
       };
@@ -190,35 +220,52 @@ export const createJdAgent = inngest.createFunction(
       }
     });
 
-    // ── emit JD_GENERATED (cascade 触发，不再依赖订阅入库) ──
+    // ── 6. emit JD_GENERATED (cascade 触发，不再依赖订阅入库) ──
     const outboundEnvelope: JdGeneratedEnvelope = {
       entity_type: 'JobDescription',
       entity_id: jdId,
       event_id: randomUUID(),
       payload: {
-        // 转发 RAAS generate-jd 的核心字段供下游使用
-        job_requisition_id: ids.requisition_id,
-        client_id: ids.client_id,
+        job_requisition_id: requisitionId,
+        client_id: clientId,
         posting_title: typeof jdData.title === 'string' ? jdData.title : '未命名岗位',
         posting_description: typeof jdData.description === 'string' ? jdData.description : '',
         city: pickCity(jdData) ?? [],
         salary_range: pickSalaryRange(jdData) ?? '',
-        interview_mode: 'unspecified',
-        degree_requirement: typeof jdData.education === 'string' ? jdData.education : '',
-        education_requirement: typeof jdData.education === 'string' ? jdData.education : '',
-        work_years: 0, // RAAS jd_content 不直接给 work_years，留 0 给后续业务补
-        recruitment_type: typeof jdData.employmentType === 'string' ? jdData.employmentType : 'unspecified',
-        must_have_skills: [], // workflow A: 这些字段由 RAAS 解析，agent 不重复
-        nice_to_have_skills: [],
-        negative_requirement: '',
-        language_requirements: '',
-        expected_level: typeof jdData.experienceLevel === 'string' ? jdData.experienceLevel : 'unspecified',
-        responsibility: typeof jdData.qualifications === 'string' ? jdData.qualifications : '',
-        requirement: typeof jdData.hardRequirements === 'string' ? jdData.hardRequirements : '',
+        interview_mode:
+          (requirement.interview_mode as string | undefined) ?? 'unspecified',
+        degree_requirement:
+          (requirement.degree_requirement as string | undefined) ??
+          (typeof jdData.education === 'string' ? jdData.education : ''),
+        education_requirement:
+          (requirement.education_requirement as string | undefined) ??
+          (typeof jdData.education === 'string' ? jdData.education : ''),
+        work_years:
+          typeof requirement.work_years === 'number' ? requirement.work_years : 0,
+        recruitment_type:
+          (requirement.recruitment_type as string | undefined) ??
+          (typeof jdData.employmentType === 'string' ? jdData.employmentType : 'unspecified'),
+        must_have_skills: Array.isArray(requirement.must_have_skills)
+          ? (requirement.must_have_skills as string[])
+          : [],
+        nice_to_have_skills: Array.isArray(requirement.nice_to_have_skills)
+          ? (requirement.nice_to_have_skills as string[])
+          : [],
+        negative_requirement: (requirement.negative_requirement as string | undefined) ?? '',
+        language_requirements:
+          (requirement.language_requirements as string | undefined) ?? '',
+        expected_level:
+          (requirement.expected_level as string | undefined) ??
+          (typeof jdData.experienceLevel === 'string' ? jdData.experienceLevel : 'unspecified'),
+        responsibility:
+          typeof jdData.qualifications === 'string' ? jdData.qualifications : '',
+        requirement:
+          typeof jdData.hardRequirements === 'string' ? jdData.hardRequirements : '',
         jd_id: jdId,
-        claimer_employee_id: payload.raw_input_data?.create_by ?? null,
-        hsm_employee_id: payload.raw_input_data?.hsm_employee_id ?? null,
-        client_job_id: payload.raw_input_data?.client_job_id ?? null,
+        claimer_employee_id:
+          (specification?.recruiter_employee_id as string | undefined) ?? null,
+        hsm_employee_id: (specification?.hsm_employee_id as string | undefined) ?? null,
+        client_job_id: (requirement.client_job_id as string | undefined) ?? null,
         search_keywords: [],
         quality_score: 0,
         quality_suggestions: [],
@@ -235,20 +282,20 @@ export const createJdAgent = inngest.createFunction(
       },
     };
 
-    await step.sendEvent(`emit-jd-generated-${ids.requisition_id}`, {
+    await step.sendEvent(`emit-jd-generated-${sanitize(requisitionId)}`, {
       name: 'JD_GENERATED',
       data: outboundEnvelope,
     });
 
     logger.info(
-      `[${AGENT_NAME}] ✅ emitted JD_GENERATED · jd_id=${jdId} requisition=${ids.requisition_id}`,
+      `[${AGENT_NAME}] ✅ emitted JD_GENERATED · jd_id=${jdId} requisition=${requisitionId}`,
     );
 
     return {
       ok: true,
       jd_id: jdId,
-      requisition_id: ids.requisition_id,
-      client_id: ids.client_id,
+      requisition_id: requisitionId,
+      client_id: clientId,
       title: typeof jdData.title === 'string' ? jdData.title : null,
       raas_request_id: generated.requestId,
     };
@@ -259,51 +306,96 @@ export const createJdAgent = inngest.createFunction(
 // Helpers
 // ──────────────────────────────────────────────────────────────────────
 
-function pickIds(
+/**
+ * 从 REQUIREMENT_LOGGED envelope 取 job_requisition_id.
+ *
+ * 优先级:
+ *   1. event.data.entity_id  ← Workflow A 标准位置 (RAAS canonical)
+ *   2. payload.requirement_id / payload.raw_input_data.job_requisition_id
+ *      ← 老 envelope 兼容
+ */
+function pickRequisitionIdFromEnvelope(
   envelope: RequirementLoggedEnvelope,
-  payload: RaasRequirementPayload,
-): { requisition_id: string | null; client_id: string | null } {
-  const r = payload.raw_input_data;
-  const requisition_id =
-    r?.job_requisition_id ??
-    payload.requirement_id ??
-    envelope.entity_id ??
-    null;
-  const client_id = r?.client_id ?? payload.client_id ?? null;
-  return { requisition_id, client_id };
+): string | null {
+  if (typeof envelope.entity_id === 'string' && envelope.entity_id.trim()) {
+    return envelope.entity_id.trim();
+  }
+  const payload = envelope.payload ?? (envelope as unknown as RaasRequirementPayload);
+  const cands: Array<unknown> = [
+    payload?.requirement_id,
+    payload?.raw_input_data?.job_requisition_id,
+  ];
+  for (const c of cands) {
+    if (typeof c === 'string' && c.trim().length > 0) return c.trim();
+  }
+  return null;
 }
 
 /**
- * 把 raw_input_data 28 字段拼成 RAAS /generate-jd 期望的 free-text prompt。
- * 优先用 payload.requirement_brief (如果上游已经准备好)，否则从结构化字段
- * 自己拼一段。
+ * 从 GET /requirements/:id 返回的 requirement + specification 拼一段
+ * RAAS /generate-jd 期望的 free-text prompt (4-4000 chars).
  */
-function buildPrompt(payload: RaasRequirementPayload): string {
-  if (typeof payload.requirement_brief === 'string' && payload.requirement_brief.trim()) {
-    return payload.requirement_brief.trim().slice(0, 4000);
-  }
-  const r = payload.raw_input_data;
-  if (!r) return '';
+function buildPromptFromRequirement(
+  requirement: RaasRequirement,
+  specification: RaasRequirementSpecification | null,
+): string {
+  const r = requirement;
+  const s: Partial<RaasRequirementSpecification> = specification ?? {};
   const lines: string[] = [];
-  if (r.sd_org_name) lines.push(`客户/部门: ${r.sd_org_name}`);
-  if (r.client_job_title) lines.push(`岗位: ${r.client_job_title}`);
-  if (r.client_job_type) lines.push(`岗位类型: ${r.client_job_type}`);
-  if (r.recruitment_type) lines.push(`招聘类型: ${r.recruitment_type}`);
-  if (r.expected_level) lines.push(`期望级别: ${r.expected_level}`);
-  if (r.city) lines.push(`工作城市: ${r.city}`);
-  if (r.headcount != null) lines.push(`招聘人数: ${r.headcount}`);
-  if (r.salary_range) lines.push(`薪资范围: ${r.salary_range}`);
-  if (r.priority) lines.push(`优先级: ${r.priority}`);
-  if (r.deadline) lines.push(`截止日期: ${r.deadline}`);
-  if (r.start_date) lines.push(`期望到岗: ${r.start_date}`);
-  if (r.first_interview_format || r.final_interview_format) {
-    lines.push(
-      `面试形式: 初试 ${r.first_interview_format ?? '—'} / 复试 ${r.final_interview_format ?? '—'}`,
-    );
+  // 客户/岗位基础
+  if (typeof r.client_job_title === 'string') lines.push(`岗位: ${r.client_job_title}`);
+  const jobType = pickStringField(r, ['client_job_type']);
+  if (jobType) lines.push(`岗位类型: ${jobType}`);
+  if (typeof r.recruitment_type === 'string') lines.push(`招聘类型: ${r.recruitment_type}`);
+  if (typeof r.expected_level === 'string') lines.push(`期望级别: ${r.expected_level}`);
+  if (typeof r.city === 'string') lines.push(`工作城市: ${r.city}`);
+  if (typeof r.headcount === 'number') lines.push(`招聘人数: ${r.headcount}`);
+  if (typeof r.salary_range === 'string') lines.push(`薪资范围: ${r.salary_range}`);
+  if (typeof r.work_years === 'number') lines.push(`工作年限: ${r.work_years} 年以上`);
+  if (typeof r.degree_requirement === 'string') lines.push(`学历要求: ${r.degree_requirement}`);
+  if (typeof r.education_requirement === 'string')
+    lines.push(`专业要求: ${r.education_requirement}`);
+  if (typeof r.language_requirements === 'string')
+    lines.push(`语言要求: ${r.language_requirements}`);
+  if (typeof r.interview_mode === 'string') lines.push(`面试形式: ${r.interview_mode}`);
+  // Spec 上的时间线
+  if (typeof s.priority === 'string') lines.push(`优先级: ${s.priority}`);
+  if (typeof s.deadline === 'string') lines.push(`截止日期: ${s.deadline}`);
+  if (typeof s.start_date === 'string') lines.push(`期望到岗: ${s.start_date}`);
+  if (s.is_exclusive) lines.push('独家委托: 是');
+  // 长文本
+  if (Array.isArray(r.must_have_skills) && r.must_have_skills.length) {
+    lines.push(`\n必备技能:\n  - ${(r.must_have_skills as string[]).join('\n  - ')}`);
   }
-  if (r.job_responsibility) lines.push(`\n岗位职责（原始）:\n${r.job_responsibility}`);
-  if (r.job_requirement) lines.push(`\n任职要求（原始）:\n${r.job_requirement}`);
+  if (Array.isArray(r.nice_to_have_skills) && r.nice_to_have_skills.length) {
+    lines.push(`\n加分技能:\n  - ${(r.nice_to_have_skills as string[]).join('\n  - ')}`);
+  }
+  if (typeof r.negative_requirement === 'string' && r.negative_requirement.trim()) {
+    lines.push(`\n排除条件: ${r.negative_requirement}`);
+  }
+  if (typeof r.job_responsibility === 'string' && r.job_responsibility.trim()) {
+    lines.push(`\n岗位职责（原始）:\n${r.job_responsibility}`);
+  }
+  if (typeof r.job_requirement === 'string' && r.job_requirement.trim()) {
+    lines.push(`\n任职要求（原始）:\n${r.job_requirement}`);
+  }
   return lines.join('\n').slice(0, 4000);
+}
+
+function pickStringField(
+  obj: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+  }
+  return undefined;
+}
+
+/** Inngest step IDs 必须稳定且只含安全字符。 */
+function sanitize(s: string): string {
+  return s.replace(/[^A-Za-z0-9-]/g, '-').slice(0, 80) || 'unknown';
 }
 
 function pickCity(jdData: RaasGenerateJdData): string[] | undefined {
