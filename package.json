@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "npm run inngest:up && next dev -p 3002",
+    "dev": "node scripts/dev-bootstrap.mjs && next dev -p 3002",
     "dev:next-only": "next dev -p 3002",
     "inngest:up": "docker compose -f docker-compose.inngest.yml up -d",
     "inngest:down": "docker compose -f docker-compose.inngest.yml down",
