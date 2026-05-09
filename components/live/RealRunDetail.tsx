@@ -7,15 +7,28 @@ import { LogStream } from "@/components/shared/LogStream";
 import { fetchJson } from "@/lib/api/client";
 import type { RunStatus, StepDetail, StepsResponse } from "@/lib/api/types";
 import type { RunSummaryResponse } from "@/app/api/runs/[id]/summary/route";
+import type { ActivityResponse, LogEntry } from "@/lib/api/activity-types";
+import type { TraceResponse } from "@/app/api/runs/[id]/trace/route";
 import { byShortFunction } from "@/lib/agent-functions";
+import { RunTraceTimeline } from "./RunTraceTimeline";
+import { RunQuickActions } from "./RunQuickActions";
+import { RunChatbot } from "./RunChatbot";
 
 // Real-run detail rendered into the center+right of /live when the user
-// clicks a real WorkflowRun row in the left list. Replaces the mock
-// "RUN-J2041 theatre". Two named exports — `RealRunCenter` and
-// `RealRunRight` — because /live's grid lays them as siblings, not parent
-// and child.
+// clicks a real WorkflowRun row in the left list. Two named exports —
+// `RealRunCenter` and `RealRunRight` — because /live's grid lays them as
+// siblings, not parent and child.
+//
+// All KPIs / anomalies / agent counts are scoped to the selected run.
+// Nothing system-wide leaks in here; that's /overview's job.
 
-type Tab = "logs" | "trail" | "ai";
+// Consolidated 2026-05-09 from 5 → 3 tabs. Old set was: overview / logs /
+// trail / trace / ai — they had ~70% data overlap (see commit message).
+// New mental model:
+//   flow → 看图：swimlane + KPIs + anomalies + quick actions, all in one
+//   ai   → 听故事：AI summary + chatbot
+//   logs → 看细节：raw activity stream
+type Tab = "flow" | "ai" | "logs";
 
 type RunDetail = {
   id: string;
@@ -66,7 +79,12 @@ export function RealRunCenter({
   onClear: () => void;
 }) {
   const { run, error, refresh } = useRunDetail(runId);
-  const [tab, setTab] = React.useState<Tab>("logs");
+  const [tab, setTab] = React.useState<Tab>("flow");
+
+  // Reset to Flow when the user picks a different run.
+  React.useEffect(() => {
+    setTab("flow");
+  }, [runId]);
 
   return (
     <div className="flex flex-col min-h-0 overflow-hidden">
@@ -80,6 +98,8 @@ export function RealRunCenter({
       />
       <Tabs tab={tab} setTab={setTab} />
       <div className="flex-1 min-h-0 flex flex-col">
+        {tab === "flow" && <FlowTab runId={runId} run={run} />}
+        {tab === "ai" && <AiAssistantTab runId={runId} />}
         {tab === "logs" && (
           <LogStream
             endpoint={`/api/runs/${encodeURIComponent(runId)}/activity?limit=300`}
@@ -88,8 +108,6 @@ export function RealRunCenter({
             emptyHint="Run 还没有 AgentActivity 行。日志契约：每个 agent 在做有意义的事（开始/完成 step、调用工具、决策、异常）时都应写一条 AgentActivity，否则这条 run 在这里看起来就是空的。"
           />
         )}
-        {tab === "trail" && <TrailTab runId={runId} />}
-        {tab === "ai" && <AiTab runId={runId} />}
       </div>
     </div>
   );
@@ -182,10 +200,10 @@ function Header({
 }
 
 function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
-  const tabs: Array<{ id: Tab; label: string }> = [
-    { id: "logs", label: "实时日志" },
-    { id: "trail", label: "Step 时间线" },
-    { id: "ai", label: "AI 总结" },
+  const tabs: Array<{ id: Tab; label: string; hint: string }> = [
+    { id: "flow", label: "流程", hint: "看图：swimlane + KPI + 异常" },
+    { id: "ai", label: "AI 助手", hint: "听故事：总结 + 自由问答" },
+    { id: "logs", label: "日志", hint: "看细节：原始活动流" },
   ];
   return (
     <div className="border-b border-line bg-surface flex gap-0.5" style={{ padding: "0 14px" }}>
@@ -195,6 +213,7 @@ function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
           <button
             key={tb.id}
             onClick={() => setTab(tb.id)}
+            title={tb.hint}
             className="bg-transparent border-0 cursor-pointer text-[12.5px]"
             style={{
               padding: "10px 12px",
@@ -211,166 +230,313 @@ function Tabs({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
   );
 }
 
-// ── Trail Tab ─────────────────────────────────────────────────────────
+// ── Overview Tab ──────────────────────────────────────────────────
+//
+// All numbers belong to THIS run. The contract:
+//   - tokens / LLM cost  → sum over `tool` activity rows whose meta.totalTokens
+//                          is set (LLM rows added by withLlmTelemetry).
+//   - decisions          → count of `decision` activity rows.
+//   - tool calls         → count of `tool` activity rows.
+//   - errors             → count of `agent_error` + `step.failed` rows.
+//   - duration           → run.completedAt - run.startedAt (or now() while running).
+//   - agents             → distinct agentName across all activities + steps.
+//   - anomaly list       → recent anomaly / error rows, newest first.
 
-function TrailTab({ runId }: { runId: string }) {
-  const [steps, setSteps] = React.useState<StepDetail[] | null>(null);
+type OverviewStats = {
+  tokens: number;
+  decisions: number;
+  toolCalls: number;
+  errors: number;
+  agents: Map<string, AgentStat>;
+  anomalies: LogEntry[];
+};
+
+type AgentStat = {
+  name: string;
+  steps: number;
+  tools: number;
+  decisions: number;
+  errors: number;
+};
+
+function emptyStats(): OverviewStats {
+  return {
+    tokens: 0,
+    decisions: 0,
+    toolCalls: 0,
+    errors: 0,
+    agents: new Map(),
+    anomalies: [],
+  };
+}
+
+function computeStats(entries: LogEntry[]): OverviewStats {
+  const stats = emptyStats();
+  const ensure = (name: string): AgentStat => {
+    let s = stats.agents.get(name);
+    if (!s) {
+      s = { name, steps: 0, tools: 0, decisions: 0, errors: 0 };
+      stats.agents.set(name, s);
+    }
+    return s;
+  };
+  for (const e of entries) {
+    const a = ensure(e.agent || "system");
+    switch (e.kind) {
+      case "tool":
+        stats.toolCalls += 1;
+        a.tools += 1;
+        const total = (e.metadata?.totalTokens as number | undefined) ?? 0;
+        if (typeof total === "number" && total > 0) stats.tokens += total;
+        break;
+      case "decision":
+        stats.decisions += 1;
+        a.decisions += 1;
+        break;
+      case "step.completed":
+      case "step.started":
+        a.steps += 1;
+        break;
+      case "anomaly":
+      case "error":
+      case "step.failed":
+        stats.errors += 1;
+        a.errors += 1;
+        stats.anomalies.push(e);
+        break;
+    }
+  }
+  // Anomalies newest first, capped — overview pane shouldn't sprawl.
+  stats.anomalies.sort((a, b) => b.ts.localeCompare(a.ts));
+  stats.anomalies = stats.anomalies.slice(0, 6);
+  return stats;
+}
+
+// Combined Flow Tab (default since 2026-05-09).
+//
+// Replaces 3 of the old 5 tabs:
+//   - 概览 (KPI tiles + agent stats + anomalies)
+//   - 实例追踪 (swimlane + 4 quick actions)
+//   - Step 时间线 (step input/output detail — accessible via 日志 expansion)
+//
+// One scrollable view, top to bottom:
+//   1. Quick action buttons (immediate "answer this for me")
+//   2. KPI strip (5 tiles, all run-scoped)
+//   3. Swimlane (the canvas — always visible on click)
+//   4. Per-agent breakdown cards
+//   5. Run-scoped anomaly cards
+//
+// One trace fetch shared between RunQuickActions and RunTraceTimeline so
+// they don't double-poll.
+
+function FlowTab({
+  runId,
+  run,
+}: {
+  runId: string;
+  run: { startedAt: string; completedAt: string | null; lastActivityAt: string } | null;
+}) {
+  const [trace, setTrace] = React.useState<TraceResponse | null>(null);
+  const [stats, setStats] = React.useState<OverviewStats | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const tick = () => {
-      fetchJson<StepsResponse>(`/api/runs/${encodeURIComponent(runId)}/steps`)
-        .then((r) => {
-          setSteps(r.steps);
-          setError(null);
-        })
-        .catch((e) => setError((e as Error).message));
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const [t, a] = await Promise.all([
+          fetchJson<TraceResponse>(`/api/runs/${encodeURIComponent(runId)}/trace`),
+          fetchJson<ActivityResponse>(`/api/runs/${encodeURIComponent(runId)}/activity?limit=500`),
+        ]);
+        if (cancelled) return;
+        setTrace(t);
+        setStats(computeStats(a.entries));
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
     };
-    tick();
-    const id = setInterval(tick, 5_000);
-    return () => clearInterval(id);
+    void tick();
+    const id = setInterval(tick, 4_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [runId]);
 
-  if (error && !steps) {
-    return (
-      <div style={{ padding: 22 }}>
+  const durationMs = run
+    ? (run.completedAt ? new Date(run.completedAt).getTime() : Date.now()) -
+      new Date(run.startedAt).getTime()
+    : 0;
+
+  return (
+    <div className="overflow-auto" style={{ padding: "16px 22px" }}>
+      <RunQuickActions runId={runId} trace={trace} />
+
+      {/* KPI strip — all numbers姓"this run" */}
+      <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold mb-2">
+        这条 run 的指标
+      </div>
+      <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+        <Kpi label="这条 run · token" value={stats ? formatNumber(stats.tokens) : "…"} muted={!stats || stats.tokens === 0} />
+        <Kpi label="这条 run · 决策" value={stats?.decisions.toString() ?? "…"} muted={!stats || stats.decisions === 0} />
+        <Kpi label="这条 run · 工具调用" value={stats?.toolCalls.toString() ?? "…"} muted={!stats || stats.toolCalls === 0} />
+        <Kpi label="这条 run · 异常" value={stats?.errors.toString() ?? "…"} tone={stats && stats.errors > 0 ? "err" : undefined} />
+        <Kpi label="这条 run · 耗时" value={run ? formatDuration(durationMs) : "…"} />
+      </div>
+
+      {error && (
         <div
-          className="border border-line rounded-md mono text-[11.5px]"
+          className="mono text-[11.5px] mb-3 rounded-sm"
           style={{
-            padding: "10px 12px",
+            padding: "6px 10px",
             background: "var(--c-warn-bg)",
             color: "oklch(0.5 0.14 75)",
           }}
         >
-          ⚠ 加载 step 失败：{error}
-          <div className="text-[10.5px] mt-1 opacity-80">
-            /api/runs/[id]/steps 走 ws sidecar，sidecar 不在线时本视图为空，AI 总结仍可基于
-            WorkflowRun 表生成。
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (!steps) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <span className="text-ink-3 text-[12px]">加载 step 中…</span>
-      </div>
-    );
-  }
-  if (steps.length === 0) {
-    return (
-      <div style={{ padding: 22 }}>
-        <EmptyState
-          title="暂无 step 记录"
-          hint="该 run 未在 WorkflowStep 表写入任何 step（可能还没开始执行，或 step 入库滞后）。"
-        />
-      </div>
-    );
-  }
-  return (
-    <div className="overflow-auto" style={{ padding: "16px 22px" }}>
-      <ol className="flex flex-col gap-2" style={{ margin: 0, padding: 0, listStyle: "none" }}>
-        {steps.map((s, i) => (
-          <StepCard key={s.id} step={s} index={i} />
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function StepCard({ step, index }: { step: StepDetail; index: number }) {
-  const fn = byShortFunction(step.agentShort);
-  const tone =
-    step.status === "completed"
-      ? "var(--c-ok)"
-      : step.status === "failed"
-        ? "var(--c-err)"
-        : step.status === "running" || step.status === "retrying"
-          ? "var(--c-info)"
-          : "var(--c-ink-4)";
-  return (
-    <li className="border border-line rounded-md bg-surface" style={{ padding: "10px 12px" }}>
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
-        <span
-          className="w-5 h-5 rounded-full grid place-items-center mono text-[10px] font-semibold flex-shrink-0"
-          style={{ color: "white", background: tone }}
-        >
-          {index + 1}
-        </span>
-        <span className="mono text-[12px] font-semibold text-ink-1">{step.agentShort}</span>
-        <Badge
-          variant={
-            step.status === "completed"
-              ? "ok"
-              : step.status === "failed"
-                ? "err"
-                : step.status === "running" || step.status === "retrying"
-                  ? "info"
-                  : "default"
-          }
-        >
-          {step.status}
-        </Badge>
-        {step.durationMs != null && (
-          <span className="mono text-[10.5px] text-ink-3">
-            {formatStepDuration(step.durationMs)}
-          </span>
-        )}
-        <div className="flex-1" />
-        <span className="mono text-[10px] text-ink-4">
-          {new Date(step.startedAt).toLocaleTimeString(undefined, { hour12: false })}
-        </span>
-      </div>
-      {fn && <div className="text-[11.5px] text-ink-3 mb-2">{fn.summary}</div>}
-      {step.error && (
-        <div
-          className="mono text-[11px] mb-2 rounded-sm"
-          style={{ padding: "6px 8px", background: "var(--c-err-bg)", color: "var(--c-err)" }}
-        >
-          {step.error}
+          ⚠ trace / activity 加载失败: {error}
         </div>
       )}
-      <div className="grid gap-2" style={{ gridTemplateColumns: "1fr 1fr" }}>
-        <IOBlock label="input" value={step.input} />
-        <IOBlock label="output" value={step.output} />
-      </div>
-    </li>
-  );
-}
 
-function IOBlock({ label, value }: { label: string; value: unknown }) {
-  if (value == null) {
-    return (
-      <div>
-        <div className="text-[10.5px] text-ink-4 font-semibold mb-1">{label}</div>
-        <div className="text-[11px] text-ink-4">—</div>
+      {/* Swimlane — the canvas. Always visible on the default tab. */}
+      <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold mb-2">
+        实例追踪 · swimlane
       </div>
-    );
-  }
-  const truncated =
-    typeof value === "object" &&
-    value &&
-    (value as { _truncated?: boolean })._truncated;
-  return (
-    <div>
-      <div className="text-[10.5px] text-ink-4 font-semibold mb-1 flex items-center gap-1">
-        {label}
-        {truncated && <Badge variant="warn">truncated</Badge>}
+      <div className="mb-4">
+        <RunTraceTimeline runId={runId} externalData={trace} />
       </div>
-      <pre
-        className="mono text-[10.5px] text-ink-2 bg-panel border border-line rounded-sm overflow-auto"
-        style={{ padding: 8, margin: 0, maxHeight: 180, lineHeight: 1.4 }}
-      >
-        {safeJson(value)}
-      </pre>
+
+      {/* Per-agent breakdown cards (was in 概览). */}
+      <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold mb-2">
+        参与 agent {stats && `· ${stats.agents.size}`}
+      </div>
+      <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+        {stats && stats.agents.size > 0 ? (
+          Array.from(stats.agents.values())
+            .sort((a, b) => b.steps - a.steps)
+            .map((a) => <AgentCard key={a.name} stat={a} />)
+        ) : (
+          <div className="text-[11.5px] text-ink-3 col-span-2">
+            还没有 agent 活动写入。等待 AgentActivity 落表（或外部 runtime POST 推送）。
+          </div>
+        )}
+      </div>
+
+      {/* Run-scoped anomalies. */}
+      <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold mb-2">
+        异常 · 仅这条 run
+        {stats && stats.errors > 0 && ` · ${stats.errors}`}
+      </div>
+      {stats && stats.anomalies.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {stats.anomalies.map((a) => (
+            <div
+              key={a.id}
+              className="border border-line rounded-sm bg-panel"
+              style={{ padding: "6px 10px" }}
+            >
+              <div className="flex items-center gap-2 mb-0.5 mono text-[10.5px]">
+                <span className="text-ink-4">
+                  {new Date(a.ts).toLocaleTimeString(undefined, { hour12: false })}
+                </span>
+                <span style={{ color: "var(--c-err)" }}>
+                  {a.kind === "step.failed" ? "✗ step.failed" : a.kind === "error" ? "✗ error" : "⚠ anomaly"}
+                </span>
+                <span className="text-ink-1 font-semibold">{a.agent}</span>
+              </div>
+              <div className="text-[12px] text-ink-2 leading-snug">{a.message}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-[11.5px] text-ink-3">未发现异常。</div>
+      )}
     </div>
   );
 }
 
-// ── AI Tab ─────────────────────────────────────────────────────────────
+// Legacy OverviewTab kept commented for ref — replaced by FlowTab above.
+// Old standalone OverviewTab + TraceTab + TrailTab were removed
+// 2026-05-09 — their content is in FlowTab above.
 
-function AiTab({ runId }: { runId: string }) {
+function Kpi({
+  label,
+  value,
+  tone,
+  muted,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: "err";
+  muted?: boolean;
+}) {
+  const color = tone === "err" ? "var(--c-err)" : "var(--c-ink-1)";
+  return (
+    <div className="bg-panel border border-line rounded-sm" style={{ padding: "8px 10px" }}>
+      <div className="hint">{label}</div>
+      <div
+        className="mono font-semibold tabular-nums"
+        style={{ color, fontSize: 18, opacity: muted ? 0.7 : 1 }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function AgentCard({ stat }: { stat: AgentStat }) {
+  const fn = byShortFunction(stat.name);
+  return (
+    <div
+      className="border border-line rounded-sm bg-panel"
+      style={{ padding: "6px 10px" }}
+    >
+      <div className="flex items-center gap-2 mb-0.5">
+        <span className="mono text-[11.5px] font-semibold text-ink-1 flex-1 truncate">
+          {stat.name}
+        </span>
+        {stat.errors > 0 ? (
+          <Badge variant="err">{stat.errors} err</Badge>
+        ) : null}
+      </div>
+      {fn && <div className="text-[10.5px] text-ink-3 mb-1 truncate">{fn.summary}</div>}
+      <div className="mono text-[10.5px] text-ink-3 flex gap-3">
+        <span>{stat.steps} step</span>
+        <span>{stat.tools} tool</span>
+        <span>{stat.decisions} decision</span>
+      </div>
+    </div>
+  );
+}
+
+function formatNumber(n: number): string {
+  if (n < 1000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+// ── Trace Tab ─────────────────────────────────────────────────────
+//
+// Owns one /api/runs/:id/trace fetch and shares it with both the quick
+// actions panel (which derives slowness/failure/RAAS answers from it)
+// and the swimlane (which renders it). One poll feeds two consumers.
+
+// TraceTab + TrailTab + StepCard + IOBlock removed 2026-05-09 — content
+// merged into FlowTab. Step input/output detail moved to /日志 Tab as
+// expandable rows (TODO: future).
+
+// ── AI Assistant Tab ───────────────────────────────────────────────────
+
+function AiAssistantTab({ runId }: { runId: string }) {
+  return (
+    <div className="overflow-auto flex flex-col" style={{ padding: "16px 22px", gap: 14 }}>
+      <AiSummarySection runId={runId} />
+      <RunChatbot runId={runId} />
+    </div>
+  );
+}
+
+function AiSummarySection({ runId }: { runId: string }) {
   const [resp, setResp] = React.useState<RunSummaryResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);

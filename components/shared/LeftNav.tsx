@@ -38,7 +38,7 @@ export function LeftNav() {
   //     remain `#` until backend lands but stay in the nav as roadmap signals.
   const items: NavItem[] = [
     { type: "group", title: t("nav_group_operate") },
-    { type: "item", id: "overview",   icon: "grid",     label: t("nav_overview"), href: "/" },
+    { type: "item", id: "overview",   icon: "grid",     label: t("nav_overview"), href: "/overview" },
     { type: "item", id: "fleet",      icon: "cpu",      label: t("nav_fleet"), count: "22", href: "/fleet" },
     { type: "item", id: "runs",       icon: "play",     label: t("nav_runs"),  count: "—", href: "/live" },
     { type: "item", id: "inbox",      icon: "user",     label: t("nav_inbox"), count: inboxCount, href: "/inbox" },

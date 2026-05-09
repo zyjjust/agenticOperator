@@ -18,7 +18,8 @@ import {
   type ActivityResponse,
   type LogEntry,
 } from "@/lib/api/activity-types";
-import { byShort } from "@/lib/agent-mapping";
+import { byShort, byWsId } from "@/lib/agent-mapping";
+import { ensureWorkflowRun } from "@/server/agent-logger";
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
@@ -152,4 +153,129 @@ function resolveAgentFromNodeId(nodeId: string): string {
   // Could try byWsId too, but agentName on AgentActivity is usually right
   // already. Default to nodeId so the UI shows something rather than blank.
   return nodeId;
+}
+
+// ── POST: external-runtime ingest ──────────────────────────────────
+//
+// Lets a separate process (e.g. resume-parser-agent on port 3020, or any
+// future external service) push activity rows into AO-main's DB without
+// importing Prisma. Cross-process logging contract:
+//
+//   POST /api/runs/{runId}/activity
+//   { triggerEvent: "REQUIREMENT_LOGGED",
+//     triggerData: { client, jdId },          // optional
+//     entries: [
+//       { agent: "JDGenerator",  // OR nodeId — we resolve canonical
+//         nodeId: "4",
+//         type: "tool",         // or step.started / decision / anomaly / ...
+//         narrative: "LLM.generateJD · 4218 tokens · 1840ms",
+//         metadata: { model: "...", durationMs: 1840, totalTokens: 4218 }
+//       },
+//       ...
+//     ]
+//   }
+//
+// Returns: { runId, written: <count>, agentNamesNormalized: { in: out } }
+//
+// Side effect: ensures the WorkflowRun row exists (upsert by id) so the
+// caller doesn't need to coordinate run lifecycle from outside.
+
+type IngestEntry = {
+  agent?: string;
+  nodeId?: string;
+  type?: string;
+  narrative?: string;
+  metadata?: Record<string, unknown> | null;
+  /** Optional client-side timestamp (ISO). Defaults to server now. */
+  ts?: string;
+};
+
+type IngestBody = {
+  triggerEvent?: string;
+  triggerData?: { client?: string; jdId?: string } | Record<string, unknown>;
+  entries: IngestEntry[];
+};
+
+export async function POST(req: Request, ctx: RouteCtx): Promise<Response> {
+  const { id: runId } = await ctx.params;
+  if (!runId) {
+    return NextResponse.json(
+      { error: "BAD_REQUEST", message: "missing run id" },
+      { status: 400 },
+    );
+  }
+
+  let body: IngestBody;
+  try {
+    body = (await req.json()) as IngestBody;
+  } catch (e) {
+    return NextResponse.json(
+      { error: "BAD_REQUEST", message: `invalid JSON: ${(e as Error).message}` },
+      { status: 400 },
+    );
+  }
+
+  if (!Array.isArray(body.entries) || body.entries.length === 0) {
+    return NextResponse.json(
+      { error: "BAD_REQUEST", message: "entries[] required (non-empty)" },
+      { status: 400 },
+    );
+  }
+  if (body.entries.length > 200) {
+    return NextResponse.json(
+      { error: "BAD_REQUEST", message: "max 200 entries per call" },
+      { status: 400 },
+    );
+  }
+
+  // Ensure the WorkflowRun row exists. If trigger info missing, infer
+  // sensible defaults — we'd rather create an under-described run than
+  // drop the activity.
+  await ensureWorkflowRun({
+    runId,
+    triggerEvent: body.triggerEvent ?? "external",
+    triggerData: body.triggerData ?? {},
+  });
+
+  const namesNormalized: Record<string, string> = {};
+  const writes: Array<Promise<unknown>> = [];
+
+  for (const e of body.entries) {
+    if (!e.type || !e.narrative) continue; // silently skip malformed
+    const nodeId = e.nodeId ?? e.agent ?? "system";
+    const requestedAgent = e.agent ?? nodeId;
+    // Resolve canonical short via byWsId(nodeId) so all consumers use
+    // the registry name. Fallback: caller-supplied agent.
+    const canonical = (nodeId && byWsId(nodeId)?.short) ?? requestedAgent;
+    if (canonical !== requestedAgent) {
+      namesNormalized[requestedAgent] = canonical;
+    }
+    writes.push(
+      prisma.agentActivity.create({
+        data: {
+          runId,
+          nodeId,
+          agentName: canonical,
+          type: e.type,
+          narrative: e.narrative,
+          metadata: e.metadata ? JSON.stringify(e.metadata) : null,
+          // createdAt defaults to now() — Prisma schema's @default(now()).
+          // We deliberately don't honor a client-side `ts` to avoid
+          // skewed timelines from misconfigured clients.
+        },
+      }),
+    );
+  }
+
+  const results = await Promise.allSettled(writes);
+  const written = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.length - written;
+
+  return NextResponse.json({
+    runId,
+    written,
+    failed,
+    agentNamesNormalized: namesNormalized,
+    fetchedAt: new Date().toISOString(),
+  });
 }

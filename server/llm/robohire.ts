@@ -16,6 +16,9 @@
 // verbatim. The caller is expected to dump it directly into
 // `payload.parsed.data` (and `payload.match.data` for match outcomes).
 
+import type { LoggerLike } from "@/server/agent-logger";
+import { fetchWithTelemetry } from "@/server/http/instrumented";
+
 const BASE = process.env.RAAS_API_BASE_URL ?? "http://localhost:3001";
 const KEY = process.env.AGENT_API_KEY ?? "";
 const TIMEOUT_MS = Number(process.env.ROBOHIRE_TIMEOUT_MS ?? 120_000);
@@ -52,6 +55,7 @@ export type RoboHireParseResult = {
 export async function roboHireParseResume(
   fileBuffer: Buffer,
   filename: string,
+  opts?: { logger?: LoggerLike },
 ): Promise<RoboHireParseResult> {
   if (!KEY) throw new RoboHireError(0, "AGENT_API_KEY not set");
 
@@ -64,12 +68,20 @@ export async function roboHireParseResume(
   });
   form.append("file", blob, filename);
 
-  const res = await fetch(`${BASE}/api/v1/parse-resume`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${KEY}` },
-    body: form,
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
+  const res = await fetchWithTelemetry(
+    `${BASE}/api/v1/parse-resume`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    },
+    {
+      logger: opts?.logger,
+      toolName: "RoboHire.parseResume",
+      meta: { filename, bytes: fileBuffer.length },
+    },
+  );
 
   const headerRequestId = res.headers.get("x-request-id") ?? "";
   const headerTraceId = res.headers.get("x-trace-id") ?? "";
@@ -151,6 +163,7 @@ export type RoboHireMatchResult = {
 
 export async function roboHireMatchResume(
   input: RoboHireMatchInput,
+  opts?: { logger?: LoggerLike },
 ): Promise<RoboHireMatchResult> {
   if (!KEY) throw new RoboHireError(0, "AGENT_API_KEY not set");
 
@@ -162,15 +175,26 @@ export async function roboHireMatchResume(
   if (input.candidatePreferences) body.candidatePreferences = input.candidatePreferences;
   if (input.jobMetadata) body.jobMetadata = input.jobMetadata;
 
-  const res = await fetch(`${BASE}/api/v1/match-resume`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KEY}`,
-      "Content-Type": "application/json",
+  const res = await fetchWithTelemetry(
+    `${BASE}/api/v1/match-resume`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
+    {
+      logger: opts?.logger,
+      toolName: "RoboHire.matchResume",
+      meta: {
+        resume_chars: input.resume.length,
+        jd_chars: input.jd.length,
+      },
+    },
+  );
 
   const headerRequestId = res.headers.get("x-request-id") ?? "";
   const headerTraceId = res.headers.get("x-trace-id") ?? "";

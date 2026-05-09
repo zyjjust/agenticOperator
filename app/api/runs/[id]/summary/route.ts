@@ -16,7 +16,7 @@ import {
   GatewayUnavailableError,
   isGatewayConfigured,
 } from "@/server/llm/gateway";
-import { byShort } from "@/lib/agent-mapping";
+import { AGENT_MAP, byShort } from "@/lib/agent-mapping";
 import { byShortFunction } from "@/lib/agent-functions";
 
 type RouteCtx = { params: Promise<{ id: string }> };
@@ -201,22 +201,31 @@ function computeAgentBreakdown(
 }
 
 const SYSTEM_PROMPT = `你是 Agentic Operator 的运行报告生成器。
-针对一次 workflow run 的事实数据，输出一份给运营人员看的中文执行总结：
+你**完全了解整个多 agent 工作流的拓扑**——每个 agent 的职责、订阅哪些事件、emit 哪些事件、谁在它的上下游。所以你的总结必须是**多 agent 视角的**，不是把每个 agent 当孤岛说一遍。
 
 格式（Markdown）：
 ## 概述
-（1~2 句：触发事件 / 总耗时 / 整体结果，不要复述原始字段）
+（1~2 句：触发事件 / 总耗时 / 整体结果。指出这条 run 走到了工作流的哪个阶段——比如"在 JD_GENERATED 阶段停下，未进入 Resume 收集"。）
 
-## 各 Agent 做了什么
-逐个列出参与的 agent。每个 agent 给一段 1~3 行的描述，说明它「具体做了什么操作」（基于 narrative + step 数 + 耗时），不要只复述 agent 名称。
+## 工作流路径
+基于"实际事件链 vs 期望路径"：
+- 用 → 串起这条 run 实际激活的 agent 顺序
+- 用 ⊘ 标出**期望但未触发**的下游 agent（基于 AGENT_MAP 的 emits→triggers 边）
+- 解释为何走到这步停下（缺失字段？被驳回？等待人工？）
+
+## 各 Agent 干了什么
+按工作流顺序列出参与的 agent。每段 1~2 行，要包含：
+- 它在工作流里的**角色**（用 agent function summary 而不是泛泛"处理了"）
+- 这条 run 里它具体做了什么（基于 narrative + tool calls + decisions）
+- 上下游链接（"接到 X 事件 → 产出 Y 事件 → 谁的输入"）
 
 ## 异常 / 关注点
-若有 failed step / 长耗时 / 重试，列出来；没有的话写"未发现异常"。
+若有 failed step / anomaly / 长耗时，列出来。**特别标出"该跑但没跑"的 agent**——这往往比已跑的失败更重要。
 
 ## 下一步建议
-1~2 条具体可操作的建议（例如：人工介入 / 调整重试策略 / 检查上游数据）。
+1~2 条**具体可操作**的建议，引用工作流位置（"建议人工介入 HSM 澄清节点" 而不是模糊的"建议人工介入"）。
 
-总长度 250~400 字。绝对不要编造未在事实中出现的字段值。`;
+总长度 300~500 字。绝对不要编造数字 / agent 名字 / 事件名。`;
 
 function buildUserPrompt(
   run: { id: string; triggerEvent: string; status: string; startedAt: Date; completedAt: Date | null; suspendedReason: string | null; triggerData: string },
@@ -232,7 +241,30 @@ function buildUserPrompt(
   lines.push(`Started: ${run.startedAt.toISOString()}`);
   lines.push(`Completed: ${run.completedAt?.toISOString() ?? "(running)"}`);
   lines.push("");
-  lines.push("Per-agent breakdown:");
+
+  // ── Inject the workflow topology so the LLM can reason about
+  //    "expected vs actual" path. Without this it can't know which
+  //    downstream agents WERE expected when this run halted.
+  const involved = new Set(breakdown.map((b) => b.agentName));
+  const expected = computeExpectedDownstream(involved, activities);
+  lines.push("Workflow topology context (subset relevant to this run):");
+  for (const a of AGENT_MAP) {
+    if (!involved.has(a.short) && !expected.has(a.short)) continue;
+    const fn = byShortFunction(a.short);
+    const tag = involved.has(a.short)
+      ? "✓ activated"
+      : expected.has(a.short)
+        ? "⊘ expected but not activated"
+        : "—";
+    lines.push(
+      `- ${a.short} [${tag}] (stage=${a.stage}, kind=${a.kind})${fn ? ` — ${fn.summary}` : ""}`,
+    );
+    lines.push(`    triggers: ${a.triggersEvents.join(", ") || "(none)"}`);
+    lines.push(`    emits: ${a.emitsEvents.join(", ") || "(terminal)"}`);
+  }
+  lines.push("");
+
+  lines.push("Per-agent breakdown for this run:");
   for (const r of breakdown) {
     const fn = byShortFunction(r.agentName);
     const desc = fn ? ` — ${fn.summary}` : "";
@@ -314,6 +346,39 @@ function deterministicSummary(
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+// Given the agents that ACTIVATED in this run, plus the events seen in
+// activity narratives, compute which downstream agents WERE EXPECTED but
+// didn't activate. This is the "should have run but didn't" set the LLM
+// uses for its 工作流路径 section.
+//
+// Algorithm:
+//   1. Collect events emitted (from activity narratives like "Published X").
+//   2. Cross-reference AGENT_MAP — any agent whose triggersEvents intersects
+//      with our emitted set, but isn't in the activated set, is "expected".
+//   3. Cap at one hop downstream — going further is speculative without
+//      knowing branch decisions.
+function computeExpectedDownstream(
+  activated: Set<string>,
+  activities: Array<{ narrative: string; type: string }>,
+): Set<string> {
+  // Pull emitted-event names out of "Published EVENT_NAME · ..." narratives.
+  const emitted = new Set<string>();
+  for (const a of activities) {
+    if (a.type !== "event_emitted" && !a.narrative.startsWith("Published")) continue;
+    const m = a.narrative.match(/Published\s+([A-Z_]+)/);
+    if (m) emitted.add(m[1]);
+  }
+  // Also consider the trigger event itself as "input" — agents subscribed
+  // to it that didn't activate are notable.
+  const expected = new Set<string>();
+  for (const agent of AGENT_MAP) {
+    if (activated.has(agent.short)) continue;
+    const matches = agent.triggersEvents.some((t) => emitted.has(t));
+    if (matches) expected.add(agent.short);
+  }
+  return expected;
 }
 
 export async function DELETE(_req: Request, ctx: RouteCtx): Promise<Response> {

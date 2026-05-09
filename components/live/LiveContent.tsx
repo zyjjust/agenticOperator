@@ -1,41 +1,229 @@
 "use client";
 import React from "react";
-import { useApp } from "@/lib/i18n";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Ic } from "@/components/shared/Ic";
-import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
+import { Badge, Btn, EmptyState } from "@/components/shared/atoms";
 import { fetchJson } from "@/lib/api/client";
 import type { RunsResponse, RunSummary } from "@/lib/api/types";
+import { AGENT_MAP } from "@/lib/agent-mapping";
 import { RunSummaryModal } from "./RunSummaryModal";
 import { RealRunCenter, RealRunRight } from "./RealRunDetail";
 
-type RunStatus = "running" | "review" | "ok" | "err";
-type Run = {
+// /live — the run inspection surface.
+//
+// Job: "show me what happened in that run." Nothing else.
+// Removed (2026-05-09):
+//   - Mock RUN-J2041 swimlane / decisions / trace / anomaly cards. Those
+//     were lying — they didn't move when you clicked a different run, and
+//     they mixed system-level and run-level semantics.
+//   - System-wide indicators. /overview is the home for those.
+//
+// Selection model:
+//   - URL state is the source of truth (?run=, ?status=, ?agent=, etc.)
+//     so a filtered view is bookmarkable and shareable.
+//   - When no run is selected, center+right show "select a run".
+
+const STATUS_GROUPS: Array<{ id: string; label: string; statuses: string[] }> = [
+  { id: "all", label: "全部", statuses: [] },
+  { id: "active", label: "运行中", statuses: ["running", "paused", "suspended"] },
+  { id: "completed", label: "已完成", statuses: ["completed"] },
+  { id: "failed", label: "失败", statuses: ["failed", "timed_out", "interrupted"] },
+];
+
+const TIME_OPTIONS: Array<{ id: string; label: string; sinceMs: number | null }> = [
+  { id: "1h", label: "1h", sinceMs: 60 * 60 * 1000 },
+  { id: "24h", label: "24h", sinceMs: 24 * 60 * 60 * 1000 },
+  { id: "7d", label: "7d", sinceMs: 7 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "全部", sinceMs: null },
+];
+
+type RunRow = {
   id: string;
-  job: string;
-  started: string;
-  dur: string;
-  status: RunStatus;
-  tokens: string;
-  cost: string;
-  current?: boolean;
-  /** True for rows that came from the real /api/runs endpoint (vs hardcoded
-   * mockRuns). Only real runs can be summarized via /api/runs/[id]/summary. */
-  real?: boolean;
+  jobLabel: string;
+  startedLabel: string;
+  durLabel: string;
+  status: RunSummary["status"];
+  pendingHitl: number;
+  hasError: boolean;
+  raw: RunSummary;
 };
 
-type EventKind = "ok" | "warn" | "err" | "tool" | "hitl";
+export function LiveContent() {
+  const router = useRouter();
+  const sp = useSearchParams();
 
-// Map P1 RunStatus (7 values) → legacy /live status enum (4 values).
-function liveStatusFor(s: RunSummary["status"]): RunStatus {
-  if (s === "running" || s === "paused") return "running";
-  if (s === "suspended") return "review";
-  if (s === "completed") return "ok";
-  return "err"; // failed | timed_out | interrupted
+  // ── URL state ─────────────────────────────────────────────────────
+  const selectedRunId = sp.get("run") ?? null;
+  const statusGroup = sp.get("status") ?? "all";
+  const timeId = sp.get("time") ?? "24h";
+  const agentParam = sp.get("agent") ?? "";
+  const selectedAgents = agentParam ? agentParam.split(",").filter(Boolean) : [];
+  const hasErrorFilter = sp.get("hasError") === "1";
+  const hasHitlFilter = sp.get("hasHitl") === "1";
+
+  const setUrl = React.useCallback(
+    (mut: (params: URLSearchParams) => void) => {
+      const next = new URLSearchParams(sp.toString());
+      mut(next);
+      router.replace(`/live${next.toString() ? `?${next.toString()}` : ""}`);
+    },
+    [router, sp],
+  );
+
+  const selectRun = React.useCallback(
+    (id: string | null) => {
+      setUrl((p) => {
+        if (id) p.set("run", id);
+        else p.delete("run");
+      });
+    },
+    [setUrl],
+  );
+
+  // ── Run list fetch ────────────────────────────────────────────────
+  const [runs, setRuns] = React.useState<RunRow[] | null>(null);
+  const [total, setTotal] = React.useState<number | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [summaryRun, setSummaryRun] = React.useState<{ id: string; job: string } | null>(null);
+
+  const refresh = React.useCallback(async () => {
+    const qs = new URLSearchParams();
+    qs.set("limit", "30");
+    const group = STATUS_GROUPS.find((g) => g.id === statusGroup);
+    if (group && group.statuses.length > 0) {
+      qs.set("status", group.statuses.join(","));
+    }
+    const timeOpt = TIME_OPTIONS.find((t) => t.id === timeId);
+    if (timeOpt?.sinceMs) {
+      qs.set("since", new Date(Date.now() - timeOpt.sinceMs).toISOString());
+    }
+    if (selectedAgents.length > 0) {
+      qs.set("agent", selectedAgents.join(","));
+    }
+    if (hasErrorFilter) qs.set("hasError", "1");
+    if (hasHitlFilter) qs.set("hasHitl", "1");
+    try {
+      const r = await fetchJson<RunsResponse>(`/api/runs?${qs.toString()}`);
+      setRuns(r.runs.map(toRow));
+      setTotal(r.total);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [statusGroup, timeId, agentParam, hasErrorFilter, hasHitlFilter]);
+  // (agentParam is the encoded form so the dep array doesn't churn on
+  // every render even when selectedAgents content is unchanged.)
+
+  React.useEffect(() => {
+    void refresh();
+    const id = setInterval(refresh, 5_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const selected = runs?.find((r) => r.id === selectedRunId) ?? null;
+
+  return (
+    <>
+      <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "300px 1fr 320px" }}>
+        {/* Left: filter bar + run list */}
+        <aside className="border-r border-line bg-surface flex flex-col min-h-0">
+          <FilterBar
+            statusGroup={statusGroup}
+            timeId={timeId}
+            selectedAgents={selectedAgents}
+            hasErrorFilter={hasErrorFilter}
+            hasHitlFilter={hasHitlFilter}
+            setUrl={setUrl}
+            shown={runs?.length ?? 0}
+            total={total}
+            onRefresh={refresh}
+          />
+          <RunList
+            runs={runs}
+            error={error}
+            selectedRunId={selectedRunId}
+            onSelect={(id) => selectRun(id)}
+            onShowSummary={(id, job) => setSummaryRun({ id, job })}
+          />
+        </aside>
+
+        {/* Center: real run detail OR empty state */}
+        {selected ? (
+          <RealRunCenter
+            runId={selected.id}
+            jobLabel={selected.jobLabel}
+            onClear={() => selectRun(null)}
+          />
+        ) : (
+          <CenterEmpty hasRuns={!!runs && runs.length > 0} />
+        )}
+
+        {/* Right: linked objects OR placeholder */}
+        {selected ? (
+          <RealRunRight
+            runId={selected.id}
+            onShowSummaryModal={() => setSummaryRun({ id: selected.id, job: selected.jobLabel })}
+          />
+        ) : (
+          <RightEmpty />
+        )}
+      </div>
+      <RunSummaryModal
+        runId={summaryRun?.id ?? null}
+        jobLabel={summaryRun?.job ?? null}
+        onClose={() => setSummaryRun(null)}
+      />
+    </>
+  );
 }
 
-function durationFor(r: RunSummary): string {
+// ── Row mapping ──────────────────────────────────────────────────────
+
+function toRow(r: RunSummary): RunRow {
+  // triggerData often comes through with placeholder "—" values for runs
+  // that didn't carry client/jdId in their trigger envelope. Build a
+  // useful headline regardless: prefer real entity, fall back to event
+  // name + run id suffix so cards never look like "—  ·  —".
+  const hasClient = r.triggerData.client && r.triggerData.client !== "—";
+  const hasJd = r.triggerData.jdId && r.triggerData.jdId !== "—";
+  let jobLabel: string;
+  if (hasClient && hasJd) {
+    jobLabel = `${r.triggerData.client} · ${r.triggerData.jdId}`;
+  } else if (hasClient) {
+    jobLabel = r.triggerData.client;
+  } else if (hasJd) {
+    jobLabel = r.triggerData.jdId;
+  } else {
+    // Truly anonymous run — surface the trigger name so you can tell rows
+    // apart even when entity context is missing.
+    jobLabel = `${r.triggerEvent} · ${r.id.slice(-6)}`;
+  }
+  return {
+    id: r.id,
+    jobLabel,
+    startedLabel: shortStart(r.startedAt),
+    durLabel: shortDuration(r),
+    status: r.status,
+    pendingHitl: r.pendingHumanTasks,
+    hasError:
+      r.status === "failed" ||
+      r.status === "timed_out" ||
+      r.status === "interrupted",
+    raw: r,
+  };
+}
+
+function shortStart(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function shortDuration(r: RunSummary): string {
   const start = new Date(r.startedAt).getTime();
-  const end = r.completedAt ? new Date(r.completedAt).getTime() : new Date(r.lastActivityAt).getTime();
+  const end = r.completedAt
+    ? new Date(r.completedAt).getTime()
+    : new Date(r.lastActivityAt).getTime();
   const ms = Math.max(0, end - start);
   const s = Math.floor(ms / 1000);
   const hh = String(Math.floor(s / 3600)).padStart(2, "0");
@@ -44,462 +232,471 @@ function durationFor(r: RunSummary): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-function startedFor(r: RunSummary): string {
-  const d = new Date(r.startedAt);
-  if (isNaN(d.getTime())) return "—";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
+// ── Filter bar ───────────────────────────────────────────────────────
 
-export function LiveContent() {
-  const { t } = useApp();
-  const [liveRuns, setLiveRuns] = React.useState<Run[] | null>(null);
-  const [partialFlag, setPartialFlag] = React.useState(false);
-  const [summaryRun, setSummaryRun] = React.useState<{ id: string; job: string } | null>(null);
-  // When set, /live's center+right are driven by this real run. Otherwise
-  // we fall back to the original Direction-C theatre (mock RUN-J2041) so
-  // the showcase keeps rendering when there's no real data to inspect.
-  const [selectedRealRun, setSelectedRealRun] = React.useState<{ id: string; job: string } | null>(null);
-
-  React.useEffect(() => {
-    fetchJson<RunsResponse>("/api/runs?limit=6")
-      .then((res) => {
-        if (res.meta.partial?.includes("ws")) setPartialFlag(true);
-        if (res.runs.length === 0) {
-          // No runs yet — keep using mock so the demo still shows shape
-          setLiveRuns(null);
-          return;
-        }
-        const mapped: Run[] = res.runs.map((r, i) => ({
-          id: r.id,
-          job: `${r.triggerData.client} · ${r.triggerData.jdId}`,
-          started: startedFor(r),
-          dur: durationFor(r),
-          status: liveStatusFor(r.status),
-          tokens: "—",
-          cost: "—",
-          current: i === 0,
-          real: true,
-        }));
-        setLiveRuns(mapped);
-      })
-      .catch(() => setPartialFlag(true));
-  }, []);
-
-  const mockRuns: Run[] = [
-    { id: "RUN-J2041", job: "工行 · 高级后端工程师 · 上海", started: "14:02", dur: "00:04:21", status: "running", tokens: "1.82M", cost: "¥12.41", current: true },
-    { id: "RUN-J2040", job: "平安 · ML 工程师 · 远程", started: "13:58", dur: "00:02:14", status: "review", tokens: "612k", cost: "¥4.80" },
-    { id: "RUN-J2039", job: "微众 · 产品设计师 · 北京", started: "13:41", dur: "00:03:02", status: "ok", tokens: "841k", cost: "¥5.32" },
-    { id: "RUN-J2038", job: "字节 · 前端工程师 · 深圳", started: "13:33", dur: "00:01:48", status: "ok", tokens: "412k", cost: "¥3.12" },
-    { id: "RUN-J2037", job: "滴滴 · 增长 PM · 远程", started: "13:18", dur: "00:04:55", status: "err", tokens: "201k", cost: "¥1.88" },
-    { id: "RUN-J2036", job: "阿里 · 数据科学家 · 杭州", started: "13:02", dur: "00:02:40", status: "ok", tokens: "722k", cost: "¥4.44" },
-  ];
-
-  const lanes: { agent: string; events: { s: number; e: number; kind: EventKind; label: string }[] }[] = [
-    { agent: "ReqSync", events: [
-      { s: 0, e: 4, kind: "ok", label: "RMS.pull · JD-2041" },
-      { s: 4, e: 7, kind: "ok", label: "REQUIREMENT_SYNCED" },
-    ] },
-    { agent: "ReqAnalyzer", events: [
-      { s: 7, e: 14, kind: "ok", label: "LLM.extract·技能+薪资" },
-      { s: 14, e: 18, kind: "warn", label: "缺失: 年限下限" },
-    ] },
-    { agent: "HSM · 人工", events: [{ s: 18, e: 22, kind: "hitl", label: "CLARIFICATION_RETRY" }] },
-    { agent: "JDGenerator", events: [
-      { s: 22, e: 32, kind: "ok", label: "LLM.generateJD" },
-      { s: 32, e: 36, kind: "tool", label: "compliance.lint" },
-    ] },
-    { agent: "Publisher", events: [
-      { s: 36, e: 42, kind: "ok", label: "前程无忧·51·智联" },
-      { s: 42, e: 46, kind: "err", label: "BOSS API 429" },
-      { s: 46, e: 50, kind: "ok", label: "retry·恢复" },
-    ] },
-    { agent: "ResumeParser", events: [{ s: 50, e: 64, kind: "ok", label: "parse 3102 · OCR+LLM" }] },
-    { agent: "Matcher", events: [
-      { s: 64, e: 76, kind: "ok", label: "硬性+加分+负向" },
-      { s: 76, e: 78, kind: "warn", label: "低置信: 12" },
-    ] },
-    { agent: "AIInterviewer", events: [
-      { s: 78, e: 90, kind: "ok", label: "conduct 88 · voice" },
-      { s: 90, e: 92, kind: "err", label: "audio.jitter" },
-    ] },
-    { agent: "Evaluator", events: [{ s: 92, e: 96, kind: "ok", label: "rubric + bias check" }] },
-    { agent: "PackageBuilder", events: [{ s: 96, e: 100, kind: "hitl", label: "等待 HSM 审批" }] },
-  ];
-
-  const decisions = [
-    { t: "14:06:12", agent: "Matcher", type: "decision" as const, text: "CAND-8821 匹配度 0.92 · 硬性 5/6 · 加分 +12 (Spring Cloud + 金融背景)。进入 AI 面试。", conf: 0.92 },
-    { t: "14:06:09", agent: "Matcher", type: "tool" as const, text: "调用 LLM.classify(model=haiku-4-5, tokens=4,218) · scoring rubric v3.2", conf: null },
-    { t: "14:06:04", agent: "AIInterviewer", type: "anomaly" as const, text: "音频抖动超过阈值 320ms，已自动重连。候选人体验评分下降 0.12。", conf: null },
-    { t: "14:05:58", agent: "AIInterviewer", type: "decision" as const, text: "候选人对『分布式事务』的回答置信度 0.61，追加 1 个场景题。", conf: 0.71 },
-    { t: "14:05:41", agent: "ResumeParser", type: "decision" as const, text: "12 份简历置信度 <0.6 (模糊字段)，标记 RESUME_LOCKED_PENDING · 待人工复核。", conf: 0.58 },
-    { t: "14:05:22", agent: "Publisher", type: "tool" as const, text: "渠道发布 · 前程/智联/猛聘/BOSS · 4 个渠道 · CHANNEL_PUBLISHED", conf: null },
-    { t: "14:05:08", agent: "Publisher", type: "anomaly" as const, text: "BOSS 直聘返回 429 Too Many Requests · 退避 2s 重试 · 恢复。", conf: null },
-    { t: "14:04:51", agent: "JDGenerator", type: "decision" as const, text: "生成 4 条渠道变体 (前程/智联/猛聘/BOSS)，合规预检 ✓。JD_GENERATED。", conf: 0.94 },
-    { t: "14:04:11", agent: "ReqAnalyzer", type: "decision" as const, text: "检测到缺失关键字段：年限下限 · 触发 CLARIFICATION_RETRY → HSM。", conf: 0.88 },
-    { t: "14:03:04", agent: "ReqSync", type: "tool" as const, text: "拉取客户 RMS 职位 JD-2041 · rev=42 · REQUIREMENT_SYNCED", conf: null },
-  ];
-
-  const trace = [
-    { lv: 0, label: "run.start", detail: "RUN-J2041 · workflow: Client→Submit v4.2", t: "+0.00s" },
-    { lv: 1, label: "ReqSync.execute", detail: "input: {client_id:ICBC, job_id:JD-2041}", t: "+0.04s" },
-    { lv: 2, label: "tool: rms.pull", detail: "REQUIREMENT_SYNCED · 812ms", t: "+0.86s" },
-    { lv: 1, label: "ReqAnalyzer.execute", detail: "ANALYSIS_COMPLETED · completeness=0.83", t: "+18.1s" },
-    { lv: 2, label: "⚠ CLARIFICATION_RETRY", detail: "missing: years_min → HSM queue", t: "+22.3s" },
-    { lv: 1, label: "JDGenerator.execute", detail: "JD_GENERATED · 4 channel variants", t: "+1m 12s" },
-    { lv: 1, label: "Publisher.execute", detail: "CHANNEL_PUBLISHED · 51Job+Zhilian+Liepin", t: "+1m 56s" },
-    { lv: 2, label: "⚠ channel.boss 429", detail: "retry · recovered", t: "+2m 11s" },
-    { lv: 1, label: "ResumeParser.execute", detail: "3102 parsed · OCR+LLM", t: "+2m 50s" },
-    { lv: 1, label: "Matcher.execute", detail: "2802 scored · top 88", t: "+3m 04s" },
-    { lv: 1, label: "AIInterviewer.execute", detail: "88 conducted · voice mode", t: "+3m 42s" },
-    { lv: 2, label: "⚠ audio.jitter", detail: "320ms > 280ms threshold · recovered", t: "+4m 01s" },
-  ];
-
+function FilterBar({
+  statusGroup,
+  timeId,
+  selectedAgents,
+  hasErrorFilter,
+  hasHitlFilter,
+  setUrl,
+  shown,
+  total,
+  onRefresh,
+}: {
+  statusGroup: string;
+  timeId: string;
+  selectedAgents: string[];
+  hasErrorFilter: boolean;
+  hasHitlFilter: boolean;
+  setUrl: (mut: (p: URLSearchParams) => void) => void;
+  shown: number;
+  total: number | null;
+  onRefresh: () => void;
+}) {
   return (
-    <>
-    <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "260px 1fr 320px" }}>
-      {/* run list */}
-      <aside className="border-r border-line bg-surface flex flex-col min-h-0">
-        <div className="border-b border-line flex items-center gap-2" style={{ padding: "12px 14px" }}>
-          <div className="flex-1 text-[13px] font-semibold">{t("nav_runs")}</div>
-          {partialFlag ? (
-            <Badge variant="warn" dot>{t("ui_partial_data")}</Badge>
-          ) : (
-            <Badge variant="info" dot>{t("realtime")}</Badge>
-          )}
-        </div>
-        <div className="border-b border-line flex gap-1.5" style={{ padding: "8px 10px" }}>
-          <Btn size="sm" style={{ flex: 1 }}>全部</Btn>
-          <Btn size="sm" variant="ghost">运行中</Btn>
-          <Btn size="sm" variant="ghost">失败</Btn>
-        </div>
-        <div className="flex-1 overflow-auto">
-          {(liveRuns ?? mockRuns).map((r) => {
-            const isSelected = selectedRealRun?.id === r.id;
-            // Highlight: real-run selection > current (for mock theatre).
-            const highlight = isSelected || (!selectedRealRun && r.current);
-            return (
-              <div
-                key={r.id}
-                onClick={() => {
-                  if (r.real) setSelectedRealRun({ id: r.id, job: r.job });
-                }}
-                title={r.real ? "点击查看真实日志和 step 时间线" : "演示数据 — 不可点击"}
-                className="border-b border-line"
-                style={{
-                  padding: "12px 14px",
-                  cursor: r.real ? "pointer" : "default",
-                  background: highlight ? "var(--c-accent-bg)" : "transparent",
-                  borderLeft: highlight ? "2px solid var(--c-accent)" : "2px solid transparent",
-                  opacity: r.real ? 1 : 0.85,
-                }}
-              >
-                <div className="flex items-center mb-1">
-                  <span
-                    className="mono text-[11px] font-semibold"
-                    style={{ color: highlight ? "var(--c-accent)" : "var(--c-ink-3)" }}
-                  >
-                    {r.id.length > 18 ? r.id.slice(0, 18) + "…" : r.id}
-                  </span>
-                  <div className="flex-1" />
-                  <StatusDot kind={r.status === "running" ? "ok" : r.status === "err" ? "err" : r.status === "review" ? "warn" : "info"} />
-                </div>
-                <div className="text-[12.5px] font-medium mb-0.5 leading-snug">{r.job}</div>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="mono text-ink-3 text-[10.5px] flex-1 truncate">
-                    {r.started} · {r.dur} · {r.tokens}
-                  </span>
-                  {r.real ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSummaryRun({ id: r.id, job: r.job });
-                      }}
-                      title="AI 总结这次运行"
-                      className="bg-transparent border border-line rounded-sm cursor-pointer mono text-[10px] text-ink-2 hover:text-ink-1 hover:border-line-strong"
-                      style={{ padding: "1px 6px" }}
-                    >
-                      <span style={{ color: "var(--c-accent)" }}>✨</span> AI
-                    </button>
-                  ) : (
-                    <span
-                      className="mono text-[10px] text-ink-4"
-                      title="演示数据 — 真实 WorkflowRun 入库后才能查看实时日志"
-                    >
-                      demo
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </aside>
-
-      {/* center: real run detail when selected, else mock theatre */}
-      {selectedRealRun ? (
-        <RealRunCenter
-          runId={selectedRealRun.id}
-          jobLabel={selectedRealRun.job}
-          onClear={() => setSelectedRealRun(null)}
-        />
-      ) : (
-      <div className="flex flex-col min-h-0 overflow-auto">
-        {/* header */}
-        <div className="border-b border-line bg-surface" style={{ padding: "16px 22px" }}>
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="mono text-[11px] font-semibold text-[color:var(--c-accent)]">RUN-J2041</span>
-            <Badge variant="ok" dot pulse>{t("s_running")}</Badge>
-            <div className="flex-1" />
-            <Btn size="sm" variant="ghost"><Ic.pause /> 暂停</Btn>
-            <Btn size="sm" variant="ghost">导出轨迹</Btn>
-            <Btn size="sm" variant="danger">中止</Btn>
-          </div>
-          <div className="text-[17px] font-semibold tracking-tight">工行 · 高级后端工程师 · 上海 · JD-2041</div>
-          <div className="text-ink-3 text-[12px] mt-0.5">Workflow: Client→Submit v4.2 · 启动 14:02:41 · 已运行 4m 21s · 当前阶段 PACKAGE_GENERATED→待审批</div>
-          <div className="mt-3 grid grid-cols-5 gap-3.5">
-            <MiniStat label={t("live_tokens")} value="1.82M" sub="+8.4k/s" />
-            <MiniStat label={t("live_latency") + " P50"} value="820ms" sub="→ within SLA" ok />
-            <MiniStat label={t("live_decisions")} value="47" sub="3 low-conf" warn />
-            <MiniStat label={t("live_tools")} value="128" sub="12 tools" />
-            <MiniStat label="成本" value="¥12.41" sub="budget ¥30" ok />
-          </div>
-        </div>
-
-        {/* timeline */}
-        <div className="border-b border-line" style={{ padding: "16px 22px" }}>
-          <div className="flex items-center mb-2.5">
-            <div className="text-[13px] font-semibold">{t("live_timeline")}</div>
-            <span className="hint ml-2.5">swimlane · per agent</span>
-            <div className="flex-1" />
-            <div className="hint">↕ {lanes.length} agents · ↔ 4m 21s</div>
-          </div>
-          <Swimlane lanes={lanes} />
-        </div>
-
-        {/* decisions */}
-        <div className="flex-1 min-h-0 flex flex-col" style={{ padding: "16px 22px" }}>
-          <div className="flex items-center mb-2.5">
-            <div className="text-[13px] font-semibold">决策流 · Decision stream</div>
-            <div className="flex-1" />
-            <Btn size="sm" variant="ghost"><Ic.search /> 过滤</Btn>
-          </div>
-          <div className="border border-line rounded-lg bg-surface overflow-hidden flex-1">
-            {decisions.map((d, i) => (
-              <DecisionRow key={i} d={d} last={i === decisions.length - 1} />
-            ))}
-          </div>
-        </div>
-      </div>
-      )}
-
-      {/* right: real linked-objects when selected, else mock trace + anomaly */}
-      {selectedRealRun ? (
-        <RealRunRight
-          runId={selectedRealRun.id}
-          onShowSummaryModal={() => setSummaryRun(selectedRealRun)}
-        />
-      ) : (
-      <aside className="border-l border-line bg-surface flex flex-col min-h-0">
-        <div className="border-b border-line flex items-center" style={{ padding: "12px 16px" }}>
-          <div className="text-[13px] font-semibold">{t("live_trace")}</div>
-          <div className="flex-1" />
-          <Btn size="sm" variant="ghost"><Ic.dots /></Btn>
-        </div>
-        <div className="flex-1 overflow-auto" style={{ padding: "8px 4px" }}>
-          {trace.map((x, i) => (
-            <div key={i} className="flex gap-2 items-start" style={{ padding: "4px 12px" }}>
-              <span className="mono text-[10px] text-ink-4 w-[52px] flex-shrink-0">{x.t}</span>
-              <div className="flex-1 min-w-0">
-                <div
-                  className="mono text-[11px]"
-                  style={{
-                    color: x.label.startsWith("⚠") ? "var(--c-err)" : "var(--c-ink-1)",
-                    paddingLeft: x.lv * 10,
-                  }}
-                >
-                  {x.label}
-                </div>
-                <div className="mono text-ink-3 text-[10.5px]" style={{ paddingLeft: x.lv * 10 }}>{x.detail}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* anomaly card */}
-        <div className="border-t border-line p-3.5">
-          <div className="flex items-center mb-2">
-            <span className="w-[22px] h-[22px] rounded-sm grid place-items-center bg-[color:var(--c-warn-bg)] text-[color:oklch(0.5_0.14_75)]">
-              <Ic.alert />
-            </span>
-            <span className="text-[13px] font-semibold ml-2">{t("live_anomaly")}</span>
-            <div className="flex-1" />
-            <Badge variant="warn">{t("al_sev_med")}</Badge>
-          </div>
-          <div className="text-[12.5px] font-medium mb-0.5">AIInterviewer · 音频抖动</div>
-          <div className="text-ink-3 text-[11.5px] leading-snug">
-            连续 3 次 ping 超过 280ms 阈值。已自动重连，候选人体验评分下降 0.12。建议检查 WebRTC 边缘节点。
-          </div>
-          <div className="mt-2.5 flex gap-1.5">
-            <Btn size="sm" variant="primary" style={{ flex: 1 }}>{t("live_investigate")}</Btn>
-            <Btn size="sm">{t("live_ack")}</Btn>
-            <Btn size="sm" variant="ghost">{t("live_suppress")}</Btn>
-          </div>
-        </div>
-      </aside>
-      )}
-    </div>
-    <RunSummaryModal
-      runId={summaryRun?.id ?? null}
-      jobLabel={summaryRun?.job ?? null}
-      onClose={() => setSummaryRun(null)}
-    />
-    </>
-  );
-}
-
-function MiniStat({ label, value, sub, ok, warn }: { label: string; value: string; sub: string; ok?: boolean; warn?: boolean }) {
-  const col = warn ? "oklch(0.5 0.14 75)" : ok ? "var(--c-ok)" : "var(--c-ink-3)";
-  return (
-    <div>
-      <div className="hint">{label}</div>
-      <div className="font-semibold text-[18px] tracking-tight tabular-nums">{value}</div>
-      <div className="mono text-[10.5px]" style={{ color: col }}>{sub}</div>
-    </div>
-  );
-}
-
-function Swimlane({ lanes }: { lanes: { agent: string; events: { s: number; e: number; kind: EventKind; label: string }[] }[] }) {
-  const rowH = 34;
-  return (
-    <div className="border border-line rounded-lg overflow-hidden bg-surface">
-      <div className="grid border-b border-line bg-panel" style={{ gridTemplateColumns: "130px 1fr" }}>
-        <div className="border-r border-line text-[10.5px] text-ink-4 tracking-[0.06em] uppercase" style={{ padding: "6px 12px" }}>Agent</div>
-        <div className="relative h-[22px]">
-          {[0, 20, 40, 60, 80, 100].map((p) => (
-            <div
-              key={p}
-              className="absolute text-[10px] text-ink-4 mono"
-              style={{ left: `${p}%`, top: 4 }}
-            >
-              {p === 0 ? "0" : p === 100 ? "4m 21s" : `${Math.round(p * 0.0421 * 60)}s`}
-            </div>
-          ))}
-        </div>
+    <div className="border-b border-line" style={{ padding: "10px 12px" }}>
+      <div className="flex items-center gap-2 mb-2">
+        <div className="text-[13px] font-semibold flex-1">运行记录</div>
+        <Btn size="sm" variant="ghost" onClick={onRefresh} title="刷新" style={{ padding: "0 6px" }}>
+          <Ic.bolt />
+        </Btn>
       </div>
 
-      {lanes.map((ln, i) => (
-        <div
-          key={i}
-          className="grid"
-          style={{
-            gridTemplateColumns: "130px 1fr",
-            borderBottom: i < lanes.length - 1 ? "1px solid var(--c-line)" : "0",
-          }}
+      {/* Status group */}
+      <Row label="状态">
+        {STATUS_GROUPS.map((g) => (
+          <Chip
+            key={g.id}
+            active={statusGroup === g.id}
+            onClick={() =>
+              setUrl((p) => {
+                if (g.id === "all") p.delete("status");
+                else p.set("status", g.id);
+              })
+            }
+          >
+            {g.label}
+          </Chip>
+        ))}
+      </Row>
+
+      {/* Time range */}
+      <Row label="时间">
+        {TIME_OPTIONS.map((t) => (
+          <Chip
+            key={t.id}
+            active={timeId === t.id}
+            onClick={() =>
+              setUrl((p) => {
+                if (t.id === "24h") p.delete("time");
+                else p.set("time", t.id);
+              })
+            }
+          >
+            {t.label}
+          </Chip>
+        ))}
+      </Row>
+
+      {/* Toggles */}
+      <Row label="标记">
+        <Chip
+          active={hasErrorFilter}
+          onClick={() =>
+            setUrl((p) => {
+              if (hasErrorFilter) p.delete("hasError");
+              else p.set("hasError", "1");
+            })
+          }
         >
-          <div className="flex items-center gap-1.5 text-[12px] border-r border-line bg-panel" style={{ padding: "0 12px" }}>
-            <StatusDot kind="ok" />
-            <span className="font-medium">{ln.agent}</span>
-          </div>
-          <div className="relative" style={{ height: rowH }}>
-            {[20, 40, 60, 80].map((p) => (
-              <div key={p} className="absolute top-0 bottom-0 w-px bg-line opacity-60" style={{ left: `${p}%` }} />
-            ))}
-            {ln.events.map((ev, j) => {
-              const col =
-                ev.kind === "ok" ? "var(--c-accent)" :
-                ev.kind === "tool" ? "var(--c-info)" :
-                ev.kind === "warn" ? "var(--c-warn)" :
-                ev.kind === "err" ? "var(--c-err)" :
-                ev.kind === "hitl" ? "oklch(0.5 0.14 75)" :
-                "var(--c-ink-3)";
-              const bg =
-                ev.kind === "ok" ? "color-mix(in oklab, var(--c-accent) 18%, transparent)" :
-                ev.kind === "tool" ? "var(--c-info-bg)" :
-                ev.kind === "warn" ? "var(--c-warn-bg)" :
-                ev.kind === "err" ? "var(--c-err-bg)" :
-                ev.kind === "hitl" ? "var(--c-warn-bg)" :
-                "var(--c-panel)";
-              return (
-                <div
-                  key={j}
-                  className="absolute flex items-center rounded-sm text-[10.5px] text-ink-1 whitespace-nowrap overflow-hidden text-ellipsis"
-                  style={{
-                    left: `${ev.s}%`,
-                    width: `calc(${ev.e - ev.s}% - 2px)`,
-                    top: 5,
-                    bottom: 5,
-                    background: bg,
-                    border: `1px solid ${col}`,
-                    borderLeft: `3px solid ${col}`,
-                    padding: "0 6px",
-                  }}
-                >
-                  {ev.label}
-                </div>
-              );
-            })}
-            {i === lanes.length - 1 && (
-              <div className="absolute top-0 bottom-0 w-0.5 bg-[color:var(--c-accent)]" style={{ left: "96%" }}>
-                <div
-                  className="absolute anim-pulse"
-                  style={{
-                    top: -3,
-                    left: -4,
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: "var(--c-accent)",
-                    boxShadow: "0 0 0 4px color-mix(in oklab, var(--c-accent) 24%, transparent)",
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
+          有错误
+        </Chip>
+        <Chip
+          active={hasHitlFilter}
+          onClick={() =>
+            setUrl((p) => {
+              if (hasHitlFilter) p.delete("hasHitl");
+              else p.set("hasHitl", "1");
+            })
+          }
+        >
+          待人工
+        </Chip>
+      </Row>
+
+      {/* Agent multi-select (compact) */}
+      <AgentPicker
+        selected={selectedAgents}
+        onToggle={(short) =>
+          setUrl((p) => {
+            const next = new Set(selectedAgents);
+            if (next.has(short)) next.delete(short);
+            else next.add(short);
+            const v = Array.from(next).join(",");
+            if (v) p.set("agent", v);
+            else p.delete("agent");
+          })
+        }
+        onClear={() => setUrl((p) => p.delete("agent"))}
+      />
+
+      <div className="mono text-[10px] text-ink-4 mt-2 flex items-center">
+        <span>{shown} 条{total != null && total !== shown && ` / 总 ${total}`}</span>
+      </div>
     </div>
   );
 }
 
-function DecisionRow({ d, last }: { d: { t: string; agent: string; type: "decision" | "tool" | "anomaly"; text: string; conf: number | null }; last: boolean }) {
-  const isAnomaly = d.type === "anomaly";
-  const isTool = d.type === "tool";
-  const dotCol = isAnomaly ? "var(--c-err)" : isTool ? "var(--c-info)" : "var(--c-accent)";
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div
-      className="flex items-start gap-3"
+    <div className="flex items-start gap-2 mb-1.5">
+      <div
+        className="mono text-[10px] text-ink-4 uppercase tracking-[0.06em]"
+        style={{ width: 36, paddingTop: 2, flexShrink: 0 }}
+      >
+        {label}
+      </div>
+      <div className="flex flex-wrap gap-1 flex-1 min-w-0">{children}</div>
+    </div>
+  );
+}
+
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="bg-transparent border cursor-pointer mono rounded-sm transition-colors"
       style={{
-        padding: "11px 14px",
-        borderBottom: last ? "0" : "1px solid var(--c-line)",
+        padding: "1px 7px",
+        fontSize: 10.5,
+        borderColor: active ? "var(--c-accent)" : "var(--c-line)",
+        background: active ? "var(--c-accent-bg)" : "var(--c-panel)",
+        color: active ? "var(--c-accent)" : "var(--c-ink-2)",
+        fontWeight: active ? 600 : 500,
       }}
     >
-      <span className="mono text-[10.5px] text-ink-4 w-[60px] flex-shrink-0 pt-0.5">{d.t}</span>
-      <span
-        className="w-2 h-2 rounded-full flex-shrink-0 mt-1.5"
-        style={{
-          background: dotCol,
-          boxShadow: `0 0 0 3px color-mix(in oklab, ${dotCol} 18%, transparent)`,
-        }}
-      />
+      {children}
+    </button>
+  );
+}
+
+function AgentPicker({
+  selected,
+  onToggle,
+  onClear,
+}: {
+  selected: string[];
+  onToggle: (short: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const label =
+    selected.length === 0
+      ? "全部 agent"
+      : selected.length === 1
+        ? selected[0]
+        : `${selected[0]} +${selected.length - 1}`;
+  return (
+    <div className="flex items-start gap-2 mb-1.5">
+      <div
+        className="mono text-[10px] text-ink-4 uppercase tracking-[0.06em]"
+        style={{ width: 36, paddingTop: 2, flexShrink: 0 }}
+      >
+        Agent
+      </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <span className="mono text-[10.5px] text-ink-3">{d.agent}</span>
-          <Badge variant={isAnomaly ? "err" : isTool ? "info" : "default"}>
-            {isAnomaly ? "异常" : isTool ? "工具" : "决策"}
-          </Badge>
-          {d.conf != null && (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="bg-panel border border-line text-ink-1 cursor-pointer mono rounded-sm w-full text-left"
+          style={{ padding: "2px 7px", fontSize: 10.5, height: 22 }}
+        >
+          {label}{" "}
+          <span className="text-ink-4">{open ? "▴" : "▾"}</span>
+          {selected.length > 0 && (
             <span
-              className="mono text-[10.5px]"
-              style={{
-                color: d.conf >= 0.8 ? "var(--c-ok)" : d.conf >= 0.65 ? "oklch(0.5 0.14 75)" : "var(--c-err)",
+              className="ml-1 text-ink-3 hover:text-ink-1"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClear();
               }}
+              title="清空 agent 过滤"
             >
-              conf {d.conf.toFixed(2)}
+              ✕
             </span>
           )}
-        </div>
-        <div className="text-[12.5px] leading-snug">{d.text}</div>
+        </button>
+        {open && (
+          <div
+            className="mt-1 border border-line rounded-sm bg-surface overflow-auto"
+            style={{ maxHeight: 220, padding: "4px 4px" }}
+          >
+            {AGENT_MAP.map((a) => {
+              const active = selected.includes(a.short);
+              return (
+                <button
+                  key={a.short}
+                  onClick={() => onToggle(a.short)}
+                  className="w-full bg-transparent border-0 cursor-pointer text-left mono"
+                  style={{
+                    padding: "3px 6px",
+                    fontSize: 10.5,
+                    color: active ? "var(--c-accent)" : "var(--c-ink-2)",
+                    fontWeight: active ? 600 : 500,
+                    background: active ? "var(--c-accent-bg)" : "transparent",
+                    borderRadius: 2,
+                  }}
+                >
+                  {active ? "✓ " : "  "}
+                  {a.short}
+                  <span className="ml-1 text-ink-4">· {a.stage}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+// ── Run list ─────────────────────────────────────────────────────────
+
+function RunList({
+  runs,
+  error,
+  selectedRunId,
+  onSelect,
+  onShowSummary,
+}: {
+  runs: RunRow[] | null;
+  error: string | null;
+  selectedRunId: string | null;
+  onSelect: (id: string) => void;
+  onShowSummary: (id: string, job: string) => void;
+}) {
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <EmptyState
+          icon={<Ic.alert />}
+          title="加载失败"
+          hint={error}
+          variant="warn"
+        />
+      </div>
+    );
+  }
+  if (!runs) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <span className="text-ink-3 text-[12px]">加载中…</span>
+      </div>
+    );
+  }
+  if (runs.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <EmptyState
+          icon={<Ic.search />}
+          title="无匹配 run"
+          hint="尝试放宽过滤条件，或等下一条触发事件"
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="flex-1 overflow-auto" style={{ padding: "8px 10px" }}>
+      <div className="flex flex-col gap-2">
+        {runs.map((r) => {
+          const isSelected = r.id === selectedRunId;
+          return (
+            <RunCard
+              key={r.id}
+              row={r}
+              selected={isSelected}
+              onClick={() => onSelect(r.id)}
+              onAi={() => onShowSummary(r.id, r.jobLabel)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Card-style run row. Entity context (client / JD) is the headline; the
+// run id is footnote material. This matches the "run is just one
+// instance of (candidate × JD)" mental model — the entity is what people
+// reason about, not the cuid.
+function RunCard({
+  row,
+  selected,
+  onClick,
+  onAi,
+}: {
+  row: RunRow;
+  selected: boolean;
+  onClick: () => void;
+  onAi: () => void;
+}) {
+  const tone =
+    row.status === "completed"
+      ? { color: "var(--c-ok)", label: "completed" }
+      : row.status === "failed" || row.status === "timed_out" || row.status === "interrupted"
+        ? { color: "var(--c-err)", label: row.status }
+        : row.status === "suspended" || row.status === "paused"
+          ? { color: "var(--c-warn)", label: row.status }
+          : { color: "var(--c-accent)", label: row.status };
+  const [client, jd] = splitJobLabel(row.jobLabel);
+  return (
+    <div
+      onClick={onClick}
+      className="cursor-pointer border rounded-md transition-colors"
+      style={{
+        padding: "10px 12px",
+        background: selected ? "var(--c-accent-bg)" : "var(--c-surface)",
+        borderColor: selected ? "var(--c-accent)" : "var(--c-line)",
+      }}
+    >
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span
+          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+          style={{
+            background: tone.color,
+            boxShadow: `0 0 0 3px color-mix(in oklab, ${tone.color} 18%, transparent)`,
+          }}
+        />
+        <span
+          className="mono text-[10px] uppercase tracking-[0.06em] font-semibold"
+          style={{ color: tone.color }}
+        >
+          {tone.label}
+        </span>
+        <span className="mono text-[10.5px] text-ink-3">
+          {row.startedLabel} · {row.durLabel}
+        </span>
+        <div className="flex-1" />
+        {row.pendingHitl > 0 && <Badge variant="warn">{row.pendingHitl} 人工</Badge>}
+      </div>
+      <div className="text-[12.5px] font-medium text-ink-1 leading-snug mb-1">
+        {client}
+      </div>
+      {(jd || (client && client !== "—")) && (
+        <div className="flex items-center gap-1 flex-wrap mb-1">
+          {jd && <EntityChip label={jd} kind="jd" />}
+          {client && client !== "—" && <EntityChip label={client} kind="client" />}
+          {!jd && !(client && client !== "—") && (
+            <span className="mono text-[10px] text-ink-4">无 entity 上下文</span>
+          )}
+        </div>
+      )}
+      {/* When triggerData is empty, surface trigger event so the card carries
+          useful info instead of looking blank. raw.triggerEvent is always set. */}
+      {!jd && (!client || client === "—") && (
+        <div className="mono text-[10.5px] text-ink-3 mb-1">
+          trigger · {row.raw.triggerEvent}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <span
+          className="mono text-[9.5px] text-ink-4 truncate flex-1"
+          title={row.id}
+        >
+          {row.id.length > 24 ? row.id.slice(0, 24) + "…" : row.id}
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onAi();
+          }}
+          title="AI 总结这次运行"
+          className="bg-transparent border border-line rounded-sm cursor-pointer mono text-[10px] text-ink-2 hover:text-ink-1 hover:border-line-strong"
+          style={{ padding: "1px 6px" }}
+        >
+          <span style={{ color: "var(--c-accent)" }}>✨</span> AI
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EntityChip({ label, kind }: { label: string; kind: "jd" | "client" }) {
+  // Profile pages don't exist yet — chips hint at the future link via tooltip
+  // but don't actually navigate anywhere. Spec doc tags entity portals as P2.
+  const tooltip = kind === "jd"
+    ? "JD profile 页 (P2)"
+    : "客户 profile 页 (P2)";
+  const accent = kind === "jd" ? "var(--c-info)" : "var(--c-ink-3)";
+  return (
+    <span
+      title={tooltip}
+      onClick={(e) => e.stopPropagation()}
+      className="mono text-[10px] inline-flex items-center gap-1 rounded-sm border cursor-help"
+      style={{
+        padding: "1px 6px",
+        background: "var(--c-panel)",
+        borderColor: "var(--c-line)",
+        color: accent,
+      }}
+    >
+      <span className="text-ink-4 uppercase tracking-[0.04em]" style={{ fontSize: 8.5 }}>
+        {kind}
+      </span>
+      <span className="text-ink-1 truncate" style={{ maxWidth: 160 }}>{label}</span>
+    </span>
+  );
+}
+
+// Splits "工行 · 高级后端工程师 · 上海 · JD-2041" into roughly client + JD parts.
+// triggerData has separate client/jdId fields; jobLabel was their join with " · ".
+function splitJobLabel(s: string): [string, string | null] {
+  const idx = s.indexOf(" · ");
+  if (idx === -1) return [s, null];
+  return [s.slice(0, idx), s.slice(idx + 3)];
+}
+
+// ── Empty states ────────────────────────────────────────────────────
+
+function CenterEmpty({ hasRuns }: { hasRuns: boolean }) {
+  return (
+    <div className="flex-1 flex items-center justify-center bg-bg">
+      <EmptyState
+        icon={<Ic.play />}
+        title={hasRuns ? "👈 选一条 run 查看详情" : "暂无 run"}
+        hint={
+          hasRuns
+            ? "运行记录的核心问题：那次运行发生了什么。点击左侧任意一行看 step 时间线、实时日志、AI 总结。"
+            : "/api/runs 当前没返回任何 run。等真实事件触发或先去 /agent-demo 触一次。"
+        }
+      />
+    </div>
+  );
+}
+
+function RightEmpty() {
+  return (
+    <aside className="border-l border-line bg-surface flex flex-col min-h-0" style={{ padding: "16px 18px" }}>
+      <div className="text-[13px] font-semibold mb-2 text-ink-3">关联对象</div>
+      <div className="text-[11.5px] text-ink-4 leading-relaxed">
+        选中一条 run 后，这里会显示：
+        <ul className="mt-2 pl-4" style={{ listStyle: "disc" }}>
+          <li>触发事件（→ /events）</li>
+          <li>客户 / JD</li>
+          <li>命中的 agent（→ /workflow）</li>
+          <li>产生的 HITL 任务（→ /inbox）</li>
+          <li>AI 总结的 mini stats</li>
+        </ul>
+      </div>
+    </aside>
   );
 }

@@ -9,14 +9,8 @@ import { fetchJson } from "@/lib/api/client";
 import { byShortFunction } from "@/lib/agent-functions";
 import type { ExplainResponse } from "@/app/api/agents/[short]/explain/route";
 import { LogStream } from "@/components/shared/LogStream";
-
-type ActiveAgentRow = {
-  agentName: string;
-  type: string;
-  narrative: string;
-  createdAt: string;
-};
-type ActiveAgentsResponse = { rows: ActiveAgentRow[] };
+import { useAgentsHealth } from "@/lib/api/agents-health";
+import type { AgentHealth, AgentHealthStatus } from "@/app/api/agents/health/route";
 
 type NodeKind = "trigger" | "agent" | "branch" | "hitl" | "guard" | "done";
 
@@ -28,7 +22,10 @@ type NodeDef = {
   title: string;
   sub: string;
   icon: IcName;
-  status?: "running" | "review" | "degraded";
+  // The hardcoded `status?: "running" | "review" | "degraded"` field was
+  // removed (2026-05-09) — live health from /api/agents/health drives the
+  // dot now. The static field had no source of truth and lied as soon as
+  // anything actually changed.
 };
 
 export function WorkflowContent() {
@@ -37,23 +34,23 @@ export function WorkflowContent() {
 
   const nodes: NodeDef[] = [
     { id: "trig", kind: "trigger", x: 20, y: 240, title: "定时同步 / Webhook", sub: "SCHEDULED_SYNC · 客户 RMS", icon: "bolt" },
-    { id: "sync", kind: "agent", x: 200, y: 240, title: "ReqSync", sub: t("agent_req_sync") + " → REQUIREMENT_SYNCED", icon: "db", status: "running" },
-    { id: "analyze", kind: "agent", x: 380, y: 240, title: "ReqAnalyzer", sub: t("agent_req_analyzer") + " → ANALYSIS_COMPLETED", icon: "sparkle", status: "running" },
+    { id: "sync", kind: "agent", x: 200, y: 240, title: "ReqSync", sub: t("agent_req_sync") + " → REQUIREMENT_SYNCED", icon: "db" },
+    { id: "analyze", kind: "agent", x: 380, y: 240, title: "ReqAnalyzer", sub: t("agent_req_analyzer") + " → ANALYSIS_COMPLETED", icon: "sparkle" },
     { id: "clarify", kind: "branch", x: 560, y: 240, title: "信息完整?", sub: "缺失字段 / 冲突", icon: "branch" },
     { id: "ask", kind: "hitl", x: 740, y: 360, title: "HSM 澄清", sub: "CLARIFICATION_RETRY", icon: "user" },
-    { id: "jd", kind: "agent", x: 740, y: 140, title: "JDGenerator", sub: t("agent_jd_gen") + " → JD_GENERATED", icon: "sparkle", status: "running" },
+    { id: "jd", kind: "agent", x: 740, y: 140, title: "JDGenerator", sub: t("agent_jd_gen") + " → JD_GENERATED", icon: "sparkle" },
     { id: "jdappr", kind: "hitl", x: 920, y: 140, title: "HSM 审批 JD", sub: "JD_APPROVED / JD_REJECTED", icon: "shield" },
-    { id: "publish", kind: "agent", x: 1100, y: 140, title: "Publisher", sub: t("agent_publisher") + " → CHANNEL_PUBLISHED", icon: "plug", status: "degraded" },
-    { id: "collect", kind: "agent", x: 1280, y: 140, title: "ResumeCollector", sub: "RESUME_DOWNLOADED", icon: "db", status: "running" },
-    { id: "parse", kind: "agent", x: 1280, y: 240, title: "ResumeParser + DupeCheck", sub: "RESUME_PROCESSED / LOCKED_CONFLICT", icon: "cpu", status: "running" },
+    { id: "publish", kind: "agent", x: 1100, y: 140, title: "Publisher", sub: t("agent_publisher") + " → CHANNEL_PUBLISHED", icon: "plug" },
+    { id: "collect", kind: "agent", x: 1280, y: 140, title: "ResumeCollector", sub: "RESUME_DOWNLOADED", icon: "db" },
+    { id: "parse", kind: "agent", x: 1280, y: 240, title: "ResumeParser + DupeCheck", sub: "RESUME_PROCESSED / LOCKED_CONFLICT", icon: "cpu" },
     { id: "match", kind: "branch", x: 1100, y: 340, title: "人岗匹配", sub: "Matcher · 硬性 / 加分 / 负向", icon: "branch" },
     { id: "reject", kind: "done", x: 1280, y: 420, title: "归档 · MATCH_FAILED", sub: "黑名单 / 硬性不符", icon: "cross" },
-    { id: "itv", kind: "agent", x: 920, y: 340, title: "AIInterviewer", sub: t("agent_interviewer") + " → AI_INTERVIEW_COMPLETED", icon: "sparkle", status: "review" },
-    { id: "eval", kind: "agent", x: 740, y: 340, title: "Evaluator", sub: "EVALUATION_PASSED / FAILED", icon: "cpu", status: "running" },
-    { id: "pkg", kind: "agent", x: 560, y: 340, title: "PackageBuilder", sub: "PACKAGE_GENERATED · 简历+评估", icon: "book", status: "running" },
+    { id: "itv", kind: "agent", x: 920, y: 340, title: "AIInterviewer", sub: t("agent_interviewer") + " → AI_INTERVIEW_COMPLETED", icon: "sparkle" },
+    { id: "eval", kind: "agent", x: 740, y: 340, title: "Evaluator", sub: "EVALUATION_PASSED / FAILED", icon: "cpu" },
+    { id: "pkg", kind: "agent", x: 560, y: 340, title: "PackageBuilder", sub: "PACKAGE_GENERATED · 简历+评估", icon: "book" },
     { id: "review", kind: "hitl", x: 380, y: 440, title: "HSM 审核推荐包", sub: "PACKAGE_APPROVED · SLA 4h", icon: "user" },
     { id: "guard", kind: "guard", x: 200, y: 440, title: "合规 & 黑名单", sub: "PII / EEO / Blacklist", icon: "shield" },
-    { id: "submit", kind: "agent", x: 20, y: 440, title: "PortalSubmitter", sub: "APPLICATION_SUBMITTED", icon: "mail", status: "running" },
+    { id: "submit", kind: "agent", x: 20, y: 440, title: "PortalSubmitter", sub: "APPLICATION_SUBMITTED", icon: "mail" },
   ];
 
   const edges = [
@@ -79,22 +76,30 @@ export function WorkflowContent() {
 
   const sel = nodes.find((n) => n.id === selectedId) || nodes[0];
 
-  // Live agent activity (last 5 min)
-  const [recentActivity, setRecentActivity] = React.useState<ActiveAgentRow[]>([]);
-  React.useEffect(() => {
-    const tick = async () => {
-      try {
-        const r = await fetchJson<ActiveAgentsResponse>("/api/workflow/active");
-        setRecentActivity(r.rows);
-      } catch {
-        /* keep last */
+  // Real-time health from /api/agents/health (5-min window).
+  // Replaces the legacy /api/workflow/active poll AND the hardcoded
+  // status field on each NodeDef.
+  const health = useAgentsHealth(4_000);
+
+  // Aggregate counts for the sub-header summary. `nodes` is a stable
+  // literal in this component body — the only thing that changes between
+  // renders is `health.byShort`, so memo against that.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const summary = React.useMemo(() => {
+    const out = { running: 0, healthy: 0, degraded: 0, failed: 0, idle: 0 };
+    for (const n of nodes) {
+      if (n.kind !== "agent") continue;
+      const short = nodeAgentShort(n);
+      if (!short) continue;
+      const h = health.byShort.get(short);
+      if (!h) {
+        out.idle += 1;
+        continue;
       }
-    };
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => clearInterval(id);
-  }, []);
-  const activeAgents = new Set(recentActivity.map((r) => r.agentName));
+      out[h.status] += 1;
+    }
+    return out;
+  }, [health.byShort]);
 
   return (
     <div className="flex-1 flex flex-col min-w-0">
@@ -104,9 +109,7 @@ export function WorkflowContent() {
           <div className="text-[15px] font-semibold tracking-tight">{t("wf_title")}</div>
           <div className="text-ink-3 text-[12px] mt-px">{t("wf_sub")}</div>
         </div>
-        <Badge variant={activeAgents.size > 0 ? "ok" : "info"} dot pulse={activeAgents.size > 0}>
-          {activeAgents.size > 0 ? `${activeAgents.size} 个 agent 活跃中` : "空闲"}
-        </Badge>
+        <HeaderHealthSummary summary={summary} />
         <Badge variant="info">{WORKFLOW_META.version} · {WORKFLOW_META.status}</Badge>
         <div className="w-px h-5 bg-line" />
         <AgenticToggle />
@@ -213,9 +216,22 @@ export function WorkflowContent() {
               <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="5s" repeatCount="indefinite" />
             </circle>
 
-            {nodes.map((n) => (
-              <WFNode key={n.id} node={n} selected={n.id === selectedId} onSelect={() => setSelectedId(n.id)} />
-            ))}
+            {nodes.map((n) => {
+              // Resolve agent shortname so WFNode can pull live health from
+              // the polled snapshot. Non-agent nodes pass undefined and
+              // keep their static visuals.
+              const short = n.kind === "agent" ? nodeAgentShort(n) : null;
+              const liveHealth = short ? health.byShort.get(short) ?? null : null;
+              return (
+                <WFNode
+                  key={n.id}
+                  node={n}
+                  liveHealth={liveHealth}
+                  selected={n.id === selectedId}
+                  onSelect={() => setSelectedId(n.id)}
+                />
+              );
+            })}
           </svg>
 
           {/* canvas chrome */}
@@ -240,7 +256,14 @@ export function WorkflowContent() {
 
         {/* inspector */}
         <aside className="border-l border-line bg-surface flex flex-col min-h-0">
-          <Inspector node={sel} />
+          <Inspector
+            node={sel}
+            liveHealth={
+              sel.kind === "agent"
+                ? health.byShort.get(nodeAgentShort(sel) ?? "") ?? null
+                : null
+            }
+          />
         </aside>
       </div>
     </div>
@@ -271,12 +294,34 @@ function PaletteSection({ title, items }: { title: string; items: { icon: IcName
   );
 }
 
+// Maps a NodeDef.title (which may carry decoration like "ResumeParser +
+// DupeCheck") to the AGENT_FUNCTIONS short. Single source of truth so
+// /workflow canvas + Inspector + summary computation all agree.
+function nodeAgentShort(node: NodeDef): string | null {
+  if (node.kind !== "agent") return null;
+  const tries = [node.title, node.title.split(/\s|\+|·/)[0]].filter(Boolean);
+  for (const t of tries) {
+    if (byShortFunction(t)) return t;
+  }
+  return null;
+}
+
+const HEALTH_TONE: Record<AgentHealthStatus, { color: string; label: string; pulse: boolean }> = {
+  idle: { color: "var(--c-ink-4)", label: "idle", pulse: false },
+  running: { color: "var(--c-ok)", label: "running", pulse: true },
+  healthy: { color: "var(--c-ok)", label: "healthy", pulse: false },
+  degraded: { color: "var(--c-warn)", label: "degraded", pulse: false },
+  failed: { color: "var(--c-err)", label: "failed", pulse: true },
+};
+
 function WFNode({
   node,
+  liveHealth,
   selected,
   onSelect,
 }: {
   node: NodeDef;
+  liveHealth: AgentHealth | null;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -292,10 +337,14 @@ function WFNode({
       default: return { fill: "var(--c-surface)", stroke: "var(--c-line-strong)", accent: "var(--c-ink-1)" };
     }
   })();
-  const statusDot = node.status === "running" ? "var(--c-ok)"
-    : node.status === "review" ? "var(--c-warn)"
-    : node.status === "degraded" ? "var(--c-err)"
-    : null;
+  // Live health drives the dot. For agent nodes we show even idle as a
+  // muted dot so the user can tell "no recent activity" apart from "no
+  // status info". Non-agent nodes (HITL / guard / branch / done) keep
+  // their static styling — they're not run by an AgentActivity author.
+  const tone =
+    node.kind === "agent" && liveHealth ? HEALTH_TONE[liveHealth.status] : null;
+  const statusDot = tone?.color ?? null;
+  const statusPulse = tone?.pulse ?? false;
   const Icon = Ic[node.icon];
   return (
     <g transform={`translate(${node.x} ${node.y})`} style={{ cursor: "pointer" }} onClick={onSelect}>
@@ -318,8 +367,26 @@ function WFNode({
         <>
           <circle cx={w - 12} cy="14" r="4" fill={statusDot} opacity="0.2" />
           <circle cx={w - 12} cy="14" r="2.5" fill={statusDot}>
-            <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />
+            {statusPulse && (
+              <animate
+                attributeName="opacity"
+                values="1;0.4;1"
+                dur="2s"
+                repeatCount="indefinite"
+              />
+            )}
           </circle>
+          {tone && (
+            <title>
+              {tone.label}
+              {liveHealth?.lastActivityAt
+                ? ` · last ${new Date(liveHealth.lastActivityAt).toLocaleTimeString(undefined, { hour12: false })}`
+                : ""}
+              {liveHealth && liveHealth.counts.failed + liveHealth.counts.error > 0
+                ? ` · ${liveHealth.counts.failed + liveHealth.counts.error} err`
+                : ""}
+            </title>
+          )}
         </>
       )}
       <line x1="0" y1="52" x2={w} y2="52" stroke="var(--c-line)" />
@@ -337,25 +404,16 @@ function WFNode({
   );
 }
 
-// Resolve the AGENT_FUNCTIONS `short` from a workflow node. Node titles
-// in the canvas sometimes carry decorations ("ResumeParser + DupeCheck"),
-// so try the whole title first, then progressively shorter prefixes.
-function resolveAgentShort(node: NodeDef): string | null {
-  if (node.kind !== "agent") return null;
-  const tries = [
-    node.title,
-    node.title.split(/\s|\+|·/)[0],
-  ].filter(Boolean);
-  for (const t of tries) {
-    if (byShortFunction(t)) return t;
-  }
-  return null;
-}
-
-function Inspector({ node }: { node: NodeDef }) {
+function Inspector({
+  node,
+  liveHealth,
+}: {
+  node: NodeDef;
+  liveHealth: AgentHealth | null;
+}) {
   const { t } = useApp();
   const Icon = Ic[node.icon];
-  const agentShort = resolveAgentShort(node);
+  const agentShort = nodeAgentShort(node);
   return (
     <>
       <div className="border-b border-line" style={{ padding: "14px 16px" }}>
@@ -374,6 +432,9 @@ function Inspector({ node }: { node: NodeDef }) {
         </div>
       </div>
       <div className="overflow-auto py-1.5">
+        {agentShort && liveHealth !== undefined && (
+          <AgentHealthPanel short={agentShort} health={liveHealth} />
+        )}
         {agentShort && <AgentExplainPanel short={agentShort} />}
         {agentShort && <AgentLogsPanel short={agentShort} />}
         <InspectField label={t("wf_when")} value="event == 'ANALYSIS_COMPLETED' && completeness >= 0.9" mono />
@@ -489,6 +550,156 @@ function KV({ k, v }: { k: string; v: string }) {
 // lazily fetches /api/agents/:short/explain. The endpoint serves a
 // deterministic markdown rendering when no LLM gateway is configured —
 // meaning the panel is useful even offline.
+// Live health snapshot for the selected agent. Same data the canvas dot
+// uses, expanded into counts + error rate + last activity timestamp so
+// the user can see WHY the dot is the color it is.
+function AgentHealthPanel({
+  short,
+  health,
+}: {
+  short: string;
+  health: AgentHealth | null;
+}) {
+  const tone = health ? HEALTH_TONE[health.status] : null;
+  const last = health?.lastActivityAt
+    ? new Date(health.lastActivityAt).toLocaleTimeString(undefined, { hour12: false })
+    : null;
+
+  return (
+    <div className="border-b border-line" style={{ padding: "10px 16px" }}>
+      <div className="flex items-center mb-2 gap-2">
+        <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold flex-1">
+          实时健康
+        </div>
+        {tone && (
+          <span
+            className="mono text-[10.5px] inline-flex items-center gap-1"
+            style={{ color: tone.color }}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{
+                background: tone.color,
+                boxShadow: `0 0 0 3px color-mix(in oklab, ${tone.color} 18%, transparent)`,
+              }}
+            />
+            {tone.label}
+          </span>
+        )}
+      </div>
+
+      {!health ? (
+        <div className="text-[11px] text-ink-3">加载 health 中…</div>
+      ) : (
+        <>
+          <div className="text-[10.5px] text-ink-3 mb-2">
+            过去 {Math.round((health.windowMs ?? 300_000) / 60_000)} 分钟窗口 ·
+            {last ? ` 最近 ${last}` : " 无活动"}
+          </div>
+          <div className="grid gap-1.5" style={{ gridTemplateColumns: "1fr 1fr" }}>
+            <HealthStat label="started" value={health.counts.started} />
+            <HealthStat label="completed" value={health.counts.completed} />
+            <HealthStat
+              label="failed"
+              value={health.counts.failed}
+              tone={health.counts.failed > 0 ? "err" : undefined}
+            />
+            <HealthStat
+              label="anomaly"
+              value={health.counts.anomaly}
+              tone={health.counts.anomaly > 0 ? "warn" : undefined}
+            />
+            <HealthStat label="tool" value={health.counts.tool} />
+            <HealthStat label="decision" value={health.counts.decision} />
+          </div>
+          <div className="mono text-[10.5px] text-ink-3 mt-2">
+            error rate · {(health.errorRate * 100).toFixed(1)}%
+            {health.hasRunningStep && " · 有进行中的 step"}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function HealthStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: "err" | "warn";
+}) {
+  const color =
+    tone === "err"
+      ? "var(--c-err)"
+      : tone === "warn"
+        ? "var(--c-warn)"
+        : value > 0
+          ? "var(--c-ink-1)"
+          : "var(--c-ink-4)";
+  return (
+    <div
+      className="bg-panel border border-line rounded-sm flex items-center gap-2"
+      style={{ padding: "3px 7px" }}
+    >
+      <span className="text-[10.5px] text-ink-4 flex-1">{label}</span>
+      <span
+        className="mono text-[12px] font-semibold tabular-nums"
+        style={{ color }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// Compact 5-status summary in the workflow sub-header. Replaces the old
+// "X 个 agent 活跃中 / 空闲" dual-state badge that came from the legacy
+// /api/workflow/active poll.
+function HeaderHealthSummary({
+  summary,
+}: {
+  summary: { running: number; healthy: number; degraded: number; failed: number; idle: number };
+}) {
+  const total = summary.running + summary.healthy + summary.degraded + summary.failed + summary.idle;
+  if (total === 0) {
+    return (
+      <Badge variant="info" dot>
+        加载 agent health…
+      </Badge>
+    );
+  }
+  // Surface the worst non-zero state first.
+  const items: Array<{ key: string; count: number; variant: "err" | "warn" | "ok" | "info" | "default"; label: string; pulse?: boolean }> = [];
+  if (summary.failed > 0)
+    items.push({ key: "failed", count: summary.failed, variant: "err", label: "failed", pulse: true });
+  if (summary.degraded > 0)
+    items.push({ key: "degraded", count: summary.degraded, variant: "warn", label: "degraded" });
+  if (summary.running > 0)
+    items.push({ key: "running", count: summary.running, variant: "ok", label: "running", pulse: true });
+  if (summary.healthy > 0)
+    items.push({ key: "healthy", count: summary.healthy, variant: "ok", label: "healthy" });
+  if (items.length === 0) {
+    items.push({
+      key: "idle",
+      count: summary.idle,
+      variant: "default",
+      label: `${summary.idle} idle`,
+    });
+  }
+  return (
+    <div className="flex items-center gap-1">
+      {items.map((it) => (
+        <Badge key={it.key} variant={it.variant} dot pulse={it.pulse}>
+          {it.count} {it.label}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function AgentExplainPanel({ short }: { short: string }) {
   const fn = byShortFunction(short);
   const [resp, setResp] = React.useState<ExplainResponse | null>(null);

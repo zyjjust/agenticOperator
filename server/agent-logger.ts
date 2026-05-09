@@ -22,6 +22,7 @@
 // lines are recoverable, crashed runs aren't.
 
 import { prisma } from "./db";
+import { byWsId } from "@/lib/agent-mapping";
 
 export type AgentLogContext = {
   /** Agent short name (e.g. "createJD"). Used as agentName + fallback nodeId. */
@@ -91,6 +92,28 @@ export type AgentLogger = {
   readonly ctx: Readonly<AgentLogContext>;
 };
 
+/**
+ * Resolve the canonical agent short for the activity row.
+ *
+ * Agent files use file-local constants (`createJD`, `matchResume`,
+ * `processResume`) but the UI registry (`AGENT_MAP` in lib/agent-mapping)
+ * uses the workflow-canvas short names (`JDGenerator`, `Matcher`,
+ * `ResumeParser`). They're THE SAME AGENT — just different naming
+ * conventions from different generations of code.
+ *
+ * To make `/api/agents/JDGenerator/activity` actually return rows that
+ * `createJD` wrote, we look up the canonical short via the wsId/nodeId
+ * (which IS aligned across both sides). When no match — fall back to
+ * whatever the caller passed.
+ */
+function canonicalAgentName(ctx: AgentLogContext): string {
+  if (ctx.nodeId) {
+    const m = byWsId(ctx.nodeId);
+    if (m) return m.short;
+  }
+  return ctx.agent;
+}
+
 /** Errors should never escape — agents shouldn't crash because logging failed. */
 async function safeWrite(
   ctx: AgentLogContext,
@@ -103,7 +126,7 @@ async function safeWrite(
       data: {
         runId: ctx.runId ?? null,
         nodeId: ctx.nodeId ?? ctx.agent,
-        agentName: ctx.agent,
+        agentName: canonicalAgentName(ctx),
         type,
         narrative,
         metadata: metadata ? safeStringify(metadata) : null,
@@ -166,3 +189,70 @@ export type LoggerLike = {
   tool(narrative: string, metadata?: Record<string, unknown>): Promise<void>;
   anomaly(narrative: string, metadata?: Record<string, unknown>): Promise<void>;
 };
+
+// ── WorkflowRun lifecycle ────────────────────────────────────────────
+//
+// Bridges the gap between Inngest's run model (event_id is the natural
+// idempotency key) and AO's WorkflowRun table (which until 2026-05-09
+// nobody was creating — only seed data). Without these helpers, every
+// AgentActivity row had runId=NULL and the /live "select run → see its
+// activity" model didn't work.
+//
+// Usage at agent entry:
+//   const runId = envelope.event_id ?? randomUUID();
+//   await step.run("ensure-run", () =>
+//     ensureWorkflowRun({ runId, triggerEvent: event.name, triggerData: { client, jdId } })
+//   );
+//   const log = createAgentLogger({ agent, nodeId, runId });
+
+export type RunLifecycleInput = {
+  runId: string;
+  triggerEvent: string;
+  triggerData?: { client?: string; jdId?: string } | Record<string, unknown>;
+};
+
+export async function ensureWorkflowRun(opts: RunLifecycleInput): Promise<void> {
+  // Upsert by id — replays of the same Inngest function (retries) hit
+  // the same id and just bump lastActivityAt. Never overwrites an
+  // already-completed run's status.
+  try {
+    await prisma.workflowRun.upsert({
+      where: { id: opts.runId },
+      create: {
+        id: opts.runId,
+        triggerEvent: opts.triggerEvent,
+        triggerData: JSON.stringify(opts.triggerData ?? {}),
+        status: "running",
+      },
+      update: {
+        lastActivityAt: new Date(),
+      },
+    });
+  } catch (e) {
+    // Same philosophy as safeWrite — never crash the agent because the
+    // bookkeeping write failed. The agent's actual work is the contract.
+    // eslint-disable-next-line no-console
+    console.warn(`[ensureWorkflowRun] failed for run ${opts.runId}: ${(e as Error).message}`);
+  }
+}
+
+export async function markRunComplete(
+  runId: string,
+  status: "completed" | "failed" | "suspended" = "completed",
+  reason?: string,
+): Promise<void> {
+  try {
+    await prisma.workflowRun.update({
+      where: { id: runId },
+      data: {
+        status,
+        completedAt: status === "completed" || status === "failed" ? new Date() : null,
+        suspendedReason: status === "suspended" ? (reason ?? null) : null,
+        lastActivityAt: new Date(),
+      },
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[markRunComplete] failed for run ${runId}: ${(e as Error).message}`);
+  }
+}
