@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
 import { isAgenticEnabled } from "../../agentic-state";
+import { createAgentLogger, type AgentLogger } from "../../agent-logger";
 import {
   isRoboHireConfigured,
   roboHireMatchResume,
@@ -474,29 +475,29 @@ export const matchResumeAgent = inngest.createFunction(
     const candidateName = (parsedData as any)?.name ?? "—";
     const filename = payload.filename ?? null;
 
+    // Single logger bound to this agent. Threaded into emitOutcome below
+    // so the same instance handles all activity rows for this run.
+    const log = createAgentLogger({ agent: AGENT_NAME, nodeId: AGENT_ID });
+
     // Agentic on/off toggle — same as processResume, short-circuit early.
     const enabled = await step.run("check-agentic-toggle", async () => {
       return await isAgenticEnabled();
     });
     if (!enabled) {
       logger.info(`[${AGENT_NAME}] agentic mode is OFF — skipping`);
-      await step.run("log-skipped", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "event_received",
-            narrative: `Skipped (agentic OFF) · candidate=${candidateName}`,
-            metadata: JSON.stringify({
-              event_name: "RESUME_PROCESSED",
-              event_id: envelope.event_id,
-              upload_id: payload.upload_id,
-              skipped: true,
-              reason: "agentic mode disabled",
-            }),
+      await step.run("log-skipped", () =>
+        log.event(
+          "event_received",
+          `Skipped (agentic OFF) · candidate=${candidateName}`,
+          {
+            event_name: "RESUME_PROCESSED",
+            event_id: envelope.event_id,
+            upload_id: payload.upload_id,
+            skipped: true,
+            reason: "agentic mode disabled",
           },
-        });
-      });
+        ),
+      );
       return { skipped: true, reason: "agentic mode disabled" };
     }
 
@@ -504,38 +505,29 @@ export const matchResumeAgent = inngest.createFunction(
       `[${AGENT_NAME}] received RESUME_PROCESSED — candidate=${candidateName} upload_id=${payload.upload_id ?? "—"}`,
     );
 
-    await step.run("log-received", async () => {
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "event_received",
-          narrative: `Received RESUME_PROCESSED · candidate=${candidateName}`,
-          metadata: JSON.stringify({
-            event_name: "RESUME_PROCESSED",
-            event_id: envelope.event_id,
-            upload_id: payload.upload_id,
-            candidate_name: candidateName,
-            filename,
-          }),
+    await step.run("log-received", () =>
+      log.event(
+        "event_received",
+        `Received RESUME_PROCESSED · candidate=${candidateName}`,
+        {
+          event_name: "RESUME_PROCESSED",
+          event_id: envelope.event_id,
+          upload_id: payload.upload_id,
+          candidate_name: candidateName,
+          filename,
         },
-      });
-    });
+      ),
+    );
 
     if (!parsedData) {
-      await step.run("log-no-parsed-data", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_error",
-            narrative: "RESUME_PROCESSED missing payload.parsed.data — emitting MATCH_FAILED",
-            metadata: JSON.stringify({ payload }),
-          },
-        });
-      });
+      await step.run("log-no-parsed-data", () =>
+        log.error("RESUME_PROCESSED missing payload.parsed.data — emitting MATCH_FAILED", {
+          payload,
+        }),
+      );
       return await emitOutcome(
         step,
+        log,
         envelope,
         payload,
         null,
@@ -555,25 +547,18 @@ export const matchResumeAgent = inngest.createFunction(
       const failJd = jds[0];
       const reason =
         `No JD found · jd_id=${payload.jd_id ?? "—"} req=${payload.job_requisition_id ?? "—"} claimer=${pickClaimerForList(payload) ?? "—"} title-hint="${failJd.filenameHint?.jobTitle ?? "—"}" — pass jd_id/job_requisition_id or ensure recruiter has claimed requirements in RAAS`;
-      await step.run("log-jd-resolve-failed", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_error",
-            narrative: reason,
-            metadata: JSON.stringify({
-              jd_id: payload.jd_id,
-              job_requisition_id: payload.job_requisition_id,
-              claimer: pickClaimerForList(payload),
-              filename,
-              filename_hint: failJd.filenameHint,
-            }),
-          },
-        });
-      });
+      await step.run("log-jd-resolve-failed", () =>
+        log.error(reason, {
+          jd_id: payload.jd_id,
+          job_requisition_id: payload.job_requisition_id,
+          claimer: pickClaimerForList(payload),
+          filename,
+          filename_hint: failJd.filenameHint,
+        }),
+      );
       return await emitOutcome(
         step,
+        log,
         envelope,
         payload,
         failJd,
@@ -587,29 +572,23 @@ export const matchResumeAgent = inngest.createFunction(
     logger.info(
       `[${AGENT_NAME}] resolved ${jds.length} JD(s) for candidate=${candidateName}`,
     );
-    await step.run("log-jds-resolved", async () => {
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "tool",
-          narrative:
-            jds.length === 1
-              ? `Resolved 1 JD · ${jds[0].title ?? jds[0].requisitionId} · source=${jds[0].source}`
-              : `Resolved ${jds.length} JDs (fan-out across recruiter roster) · source=${jds[0].source}`,
-          metadata: JSON.stringify({
-            count: jds.length,
-            jds: jds.map((j) => ({
-              source: j.source,
-              jd_id: j.jdId,
-              job_requisition_id: j.requisitionId,
-              client: j.client,
-              title: j.title,
-            })),
-          }),
+    await step.run("log-jds-resolved", () =>
+      log.tool(
+        jds.length === 1
+          ? `Resolved 1 JD · ${jds[0].title ?? jds[0].requisitionId} · source=${jds[0].source}`
+          : `Resolved ${jds.length} JDs (fan-out across recruiter roster) · source=${jds[0].source}`,
+        {
+          count: jds.length,
+          jds: jds.map((j) => ({
+            source: j.source,
+            jd_id: j.jdId,
+            job_requisition_id: j.requisitionId,
+            client: j.client,
+            title: j.title,
+          })),
         },
-      });
-    });
+      ),
+    );
 
     // Step 2 — flatten parsed data → resume text once (shared across all JDs).
     const resumeText = await step.run("flatten-resume", async () => {
@@ -650,7 +629,7 @@ export const matchResumeAgent = inngest.createFunction(
             console.warn(
               `[${AGENT_NAME}] RoboHire match failed for ${jd.requisitionId} (${reason}); falling back to LLM matcher`,
             );
-            const llm = await llmMatchRoboHireShape(resumeText, jd.jdText);
+            const llm = await llmMatchRoboHireShape(resumeText, jd.jdText, { logger: log });
             return {
               data: { ...llm.match } as unknown as Record<string, unknown>,
               mode: "llm-fallback",
@@ -663,7 +642,7 @@ export const matchResumeAgent = inngest.createFunction(
             };
           }
         }
-        const llm = await llmMatchRoboHireShape(resumeText, jd.jdText);
+        const llm = await llmMatchRoboHireShape(resumeText, jd.jdText, { logger: log });
         return {
           data: { ...llm.match } as unknown as Record<string, unknown>,
           mode: "llm-only",
@@ -679,31 +658,27 @@ export const matchResumeAgent = inngest.createFunction(
       const matchScore = pickScore(match.data);
       const recommendation = pickRecommendation(match.data, matchScore);
 
-      await step.run(`log-match-complete-${stepKey}`, async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_complete",
-            narrative: `Match · ${jd.title ?? jd.requisitionId} · score=${matchScore} · ${recommendation} · ${match.matchDurationMs}ms · mode=${match.mode}`,
-            metadata: JSON.stringify({
-              score: matchScore,
-              recommendation,
-              duration_ms: match.matchDurationMs,
-              mode: match.mode,
-              model_used: match.modelUsed,
-              request_id: match.requestId,
-              fallback_reason: match.fallbackReason,
-              jd: jd,
-              match: match.data,
-            }),
+      await step.run(`log-match-complete-${stepKey}`, () =>
+        log.done(
+          `Match · ${jd.title ?? jd.requisitionId} · score=${matchScore} · ${recommendation} · ${match.matchDurationMs}ms · mode=${match.mode}`,
+          {
+            score: matchScore,
+            recommendation,
+            duration_ms: match.matchDurationMs,
+            mode: match.mode,
+            model_used: match.modelUsed,
+            request_id: match.requestId,
+            fallback_reason: match.fallbackReason,
+            jd: jd,
+            match: match.data,
           },
-        });
-      });
+        ),
+      );
 
       const outcome = scoreToOutcome(matchScore);
       const result = await emitOutcome(
         step,
+        log,
         envelope,
         payload,
         jd,
@@ -741,6 +716,7 @@ type MatchStepResult = {
 
 async function emitOutcome(
   step: Parameters<Parameters<typeof inngest.createFunction>[1]>[0]["step"],
+  log: AgentLogger,
   envelope: ResumeProcessedEnvelope,
   payload: ResumeProcessedPayload,
   jd: ResolvedJd | null,
@@ -807,27 +783,23 @@ async function emitOutcome(
     return forwardToRaas(outcome, outboundEnvelope);
   });
 
-  await step.run(`log-emitted${suffix}`, async () => {
-    await prisma.agentActivity.create({
-      data: {
-        nodeId: AGENT_ID,
-        agentName: AGENT_NAME,
-        type: "event_emitted",
-        narrative: scoreInfo
-          ? `Published ${outcome} · score=${scoreInfo.matchScore} · ${scoreInfo.recommendation}`
-          : `Published ${outcome} · ${reason ?? "(no match data)"}`,
-        metadata: JSON.stringify({
-          event_name: outcome,
-          event_id: outboundEnvelope.event_id,
-          upload_id: payload.upload_id,
-          score: scoreInfo?.matchScore,
-          recommendation: scoreInfo?.recommendation,
-          reason,
-          matcher_request_id: matchResult?.requestId,
-        }),
+  await step.run(`log-emitted${suffix}`, () =>
+    log.event(
+      "event_emitted",
+      scoreInfo
+        ? `Published ${outcome} · score=${scoreInfo.matchScore} · ${scoreInfo.recommendation}`
+        : `Published ${outcome} · ${reason ?? "(no match data)"}`,
+      {
+        event_name: outcome,
+        event_id: outboundEnvelope.event_id,
+        upload_id: payload.upload_id,
+        score: scoreInfo?.matchScore,
+        recommendation: scoreInfo?.recommendation,
+        reason,
+        matcher_request_id: matchResult?.requestId,
       },
-    });
-  });
+    ),
+  );
 
   return { outcome, score: scoreInfo?.matchScore ?? 0 };
 }

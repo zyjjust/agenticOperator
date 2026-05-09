@@ -5,6 +5,8 @@ import { Ic } from "@/components/shared/Ic";
 import { Badge, Btn, StatusDot } from "@/components/shared/atoms";
 import { fetchJson } from "@/lib/api/client";
 import type { RunsResponse, RunSummary } from "@/lib/api/types";
+import { RunSummaryModal } from "./RunSummaryModal";
+import { RealRunCenter, RealRunRight } from "./RealRunDetail";
 
 type RunStatus = "running" | "review" | "ok" | "err";
 type Run = {
@@ -16,6 +18,9 @@ type Run = {
   tokens: string;
   cost: string;
   current?: boolean;
+  /** True for rows that came from the real /api/runs endpoint (vs hardcoded
+   * mockRuns). Only real runs can be summarized via /api/runs/[id]/summary. */
+  real?: boolean;
 };
 
 type EventKind = "ok" | "warn" | "err" | "tool" | "hitl";
@@ -49,6 +54,11 @@ export function LiveContent() {
   const { t } = useApp();
   const [liveRuns, setLiveRuns] = React.useState<Run[] | null>(null);
   const [partialFlag, setPartialFlag] = React.useState(false);
+  const [summaryRun, setSummaryRun] = React.useState<{ id: string; job: string } | null>(null);
+  // When set, /live's center+right are driven by this real run. Otherwise
+  // we fall back to the original Direction-C theatre (mock RUN-J2041) so
+  // the showcase keeps rendering when there's no real data to inspect.
+  const [selectedRealRun, setSelectedRealRun] = React.useState<{ id: string; job: string } | null>(null);
 
   React.useEffect(() => {
     fetchJson<RunsResponse>("/api/runs?limit=6")
@@ -68,6 +78,7 @@ export function LiveContent() {
           tokens: "—",
           cost: "—",
           current: i === 0,
+          real: true,
         }));
         setLiveRuns(mapped);
       })
@@ -144,6 +155,7 @@ export function LiveContent() {
   ];
 
   return (
+    <>
     <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "260px 1fr 320px" }}>
       {/* run list */}
       <aside className="border-r border-line bg-surface flex flex-col min-h-0">
@@ -161,34 +173,76 @@ export function LiveContent() {
           <Btn size="sm" variant="ghost">失败</Btn>
         </div>
         <div className="flex-1 overflow-auto">
-          {(liveRuns ?? mockRuns).map((r) => (
-            <div
-              key={r.id}
-              className="cursor-pointer border-b border-line"
-              style={{
-                padding: "12px 14px",
-                background: r.current ? "var(--c-accent-bg)" : "transparent",
-                borderLeft: r.current ? "2px solid var(--c-accent)" : "2px solid transparent",
-              }}
-            >
-              <div className="flex items-center mb-1">
-                <span
-                  className="mono text-[11px] font-semibold"
-                  style={{ color: r.current ? "var(--c-accent)" : "var(--c-ink-3)" }}
-                >
-                  {r.id}
-                </span>
-                <div className="flex-1" />
-                <StatusDot kind={r.status === "running" ? "ok" : r.status === "err" ? "err" : r.status === "review" ? "warn" : "info"} />
+          {(liveRuns ?? mockRuns).map((r) => {
+            const isSelected = selectedRealRun?.id === r.id;
+            // Highlight: real-run selection > current (for mock theatre).
+            const highlight = isSelected || (!selectedRealRun && r.current);
+            return (
+              <div
+                key={r.id}
+                onClick={() => {
+                  if (r.real) setSelectedRealRun({ id: r.id, job: r.job });
+                }}
+                title={r.real ? "点击查看真实日志和 step 时间线" : "演示数据 — 不可点击"}
+                className="border-b border-line"
+                style={{
+                  padding: "12px 14px",
+                  cursor: r.real ? "pointer" : "default",
+                  background: highlight ? "var(--c-accent-bg)" : "transparent",
+                  borderLeft: highlight ? "2px solid var(--c-accent)" : "2px solid transparent",
+                  opacity: r.real ? 1 : 0.85,
+                }}
+              >
+                <div className="flex items-center mb-1">
+                  <span
+                    className="mono text-[11px] font-semibold"
+                    style={{ color: highlight ? "var(--c-accent)" : "var(--c-ink-3)" }}
+                  >
+                    {r.id.length > 18 ? r.id.slice(0, 18) + "…" : r.id}
+                  </span>
+                  <div className="flex-1" />
+                  <StatusDot kind={r.status === "running" ? "ok" : r.status === "err" ? "err" : r.status === "review" ? "warn" : "info"} />
+                </div>
+                <div className="text-[12.5px] font-medium mb-0.5 leading-snug">{r.job}</div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="mono text-ink-3 text-[10.5px] flex-1 truncate">
+                    {r.started} · {r.dur} · {r.tokens}
+                  </span>
+                  {r.real ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSummaryRun({ id: r.id, job: r.job });
+                      }}
+                      title="AI 总结这次运行"
+                      className="bg-transparent border border-line rounded-sm cursor-pointer mono text-[10px] text-ink-2 hover:text-ink-1 hover:border-line-strong"
+                      style={{ padding: "1px 6px" }}
+                    >
+                      <span style={{ color: "var(--c-accent)" }}>✨</span> AI
+                    </button>
+                  ) : (
+                    <span
+                      className="mono text-[10px] text-ink-4"
+                      title="演示数据 — 真实 WorkflowRun 入库后才能查看实时日志"
+                    >
+                      demo
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="text-[12.5px] font-medium mb-0.5 leading-snug">{r.job}</div>
-              <div className="mono text-ink-3 text-[10.5px]">{r.started} · {r.dur} · {r.tokens}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </aside>
 
-      {/* center: timeline + decisions */}
+      {/* center: real run detail when selected, else mock theatre */}
+      {selectedRealRun ? (
+        <RealRunCenter
+          runId={selectedRealRun.id}
+          jobLabel={selectedRealRun.job}
+          onClear={() => setSelectedRealRun(null)}
+        />
+      ) : (
       <div className="flex flex-col min-h-0 overflow-auto">
         {/* header */}
         <div className="border-b border-line bg-surface" style={{ padding: "16px 22px" }}>
@@ -236,8 +290,15 @@ export function LiveContent() {
           </div>
         </div>
       </div>
+      )}
 
-      {/* right: trace + anomaly */}
+      {/* right: real linked-objects when selected, else mock trace + anomaly */}
+      {selectedRealRun ? (
+        <RealRunRight
+          runId={selectedRealRun.id}
+          onShowSummaryModal={() => setSummaryRun(selectedRealRun)}
+        />
+      ) : (
       <aside className="border-l border-line bg-surface flex flex-col min-h-0">
         <div className="border-b border-line flex items-center" style={{ padding: "12px 16px" }}>
           <div className="text-[13px] font-semibold">{t("live_trace")}</div>
@@ -285,7 +346,14 @@ export function LiveContent() {
           </div>
         </div>
       </aside>
+      )}
     </div>
+    <RunSummaryModal
+      runId={summaryRun?.id ?? null}
+      jobLabel={summaryRun?.job ?? null}
+      onClose={() => setSummaryRun(null)}
+    />
+    </>
   );
 }
 

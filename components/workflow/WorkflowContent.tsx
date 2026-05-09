@@ -6,6 +6,9 @@ import { Badge, Btn } from "@/components/shared/atoms";
 import { AgenticToggle } from "@/components/shared/AgenticToggle";
 import { WORKFLOW_META } from "@/lib/workflow-meta";
 import { fetchJson } from "@/lib/api/client";
+import { byShortFunction } from "@/lib/agent-functions";
+import type { ExplainResponse } from "@/app/api/agents/[short]/explain/route";
+import { LogStream } from "@/components/shared/LogStream";
 
 type ActiveAgentRow = {
   agentName: string;
@@ -334,9 +337,25 @@ function WFNode({
   );
 }
 
+// Resolve the AGENT_FUNCTIONS `short` from a workflow node. Node titles
+// in the canvas sometimes carry decorations ("ResumeParser + DupeCheck"),
+// so try the whole title first, then progressively shorter prefixes.
+function resolveAgentShort(node: NodeDef): string | null {
+  if (node.kind !== "agent") return null;
+  const tries = [
+    node.title,
+    node.title.split(/\s|\+|·/)[0],
+  ].filter(Boolean);
+  for (const t of tries) {
+    if (byShortFunction(t)) return t;
+  }
+  return null;
+}
+
 function Inspector({ node }: { node: NodeDef }) {
   const { t } = useApp();
   const Icon = Ic[node.icon];
+  const agentShort = resolveAgentShort(node);
   return (
     <>
       <div className="border-b border-line" style={{ padding: "14px 16px" }}>
@@ -355,6 +374,8 @@ function Inspector({ node }: { node: NodeDef }) {
         </div>
       </div>
       <div className="overflow-auto py-1.5">
+        {agentShort && <AgentExplainPanel short={agentShort} />}
+        {agentShort && <AgentLogsPanel short={agentShort} />}
         <InspectField label={t("wf_when")} value="event == 'ANALYSIS_COMPLETED' && completeness >= 0.9" mono />
         <InspectField label={t("wf_tools")}>
           <div className="flex flex-wrap gap-1">
@@ -460,6 +481,145 @@ function KV({ k, v }: { k: string; v: string }) {
     <div className="flex flex-col bg-panel rounded-sm border border-line" style={{ padding: "6px 8px" }}>
       <span className="hint">{k}</span>
       <span className="mono text-[12px] font-medium">{v}</span>
+    </div>
+  );
+}
+
+// Renders the registry-driven snapshot inline, plus a "AI 解读" button that
+// lazily fetches /api/agents/:short/explain. The endpoint serves a
+// deterministic markdown rendering when no LLM gateway is configured —
+// meaning the panel is useful even offline.
+function AgentExplainPanel({ short }: { short: string }) {
+  const fn = byShortFunction(short);
+  const [resp, setResp] = React.useState<ExplainResponse | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+
+  // Reset whenever the inspector switches agents.
+  React.useEffect(() => {
+    setResp(null);
+    setErr(null);
+  }, [short]);
+
+  const fetchExplain = React.useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await fetchJson<ExplainResponse>(
+        `/api/agents/${encodeURIComponent(short)}/explain`,
+      );
+      setResp(r);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [short]);
+
+  if (!fn) return null;
+
+  return (
+    <div className="border-b border-line" style={{ padding: "10px 16px" }}>
+      <div className="flex items-center mb-2">
+        <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold flex-1">
+          AI 解读
+        </div>
+        {resp && (
+          <Badge variant={resp.source === "llm" ? "ok" : "info"}>
+            {resp.source === "llm" ? `via ${resp.modelUsed ?? "llm"}` : "fallback (无网关)"}
+          </Badge>
+        )}
+      </div>
+
+      {/* Always show the registry snapshot — it's instant and grounds the
+          UI even before the LLM call returns. */}
+      <div className="text-[12.5px] text-ink-1 leading-relaxed mb-2">{fn.summary}</div>
+      <div className="grid gap-2 mb-2" style={{ gridTemplateColumns: "1fr" }}>
+        <ExplainBlock title="典型操作" items={fn.operations} />
+        <ExplainBlock title="调用工具" items={fn.tools} />
+        {fn.failureModes && fn.failureModes.length > 0 && (
+          <ExplainBlock title="常见失败模式" items={fn.failureModes} muted />
+        )}
+      </div>
+
+      {!resp && !loading && (
+        <Btn size="sm" onClick={fetchExplain} variant="default">
+          <Ic.sparkle /> 让 AI 详细解读
+        </Btn>
+      )}
+      {loading && (
+        <div className="text-[11px] text-ink-3">AI 正在生成解读…</div>
+      )}
+      {err && (
+        <div className="text-[11px]" style={{ color: "var(--c-warn)" }}>
+          ⚠ {err}
+        </div>
+      )}
+      {resp && (
+        <div
+          className="mono text-[11.5px] text-ink-2 bg-panel border border-line rounded-sm overflow-auto whitespace-pre-wrap"
+          style={{ padding: 10, maxHeight: 320, lineHeight: 1.5 }}
+        >
+          {resp.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Cross-run activity log filtered to this agent. Renders inside the
+// Inspector — `compact` mode keeps it usable in the narrow right rail.
+// Auto-polls every 4s; toolbar lets the user pause and search.
+function AgentLogsPanel({ short }: { short: string }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="border-b border-line" style={{ padding: "10px 16px" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full bg-transparent border-0 cursor-pointer flex items-center"
+        style={{ padding: 0 }}
+      >
+        <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold flex-1 text-left">
+          运行日志 · 跨 run
+        </div>
+        <span className="mono text-[10px] text-ink-3">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div
+          className="mt-2 border border-line rounded-md overflow-hidden bg-surface"
+          style={{ height: 360 }}
+        >
+          <LogStream
+            endpoint={`/api/agents/${encodeURIComponent(short)}/activity?limit=100`}
+            order="desc"
+            hideAgent
+            compact
+            pollIntervalMs={4000}
+            emptyHint={`${short} 还没有写入 AgentActivity 行。日志契约：每个 agent 在做有意义的事时（开始/完成 step、调用工具、决策、异常）应写一条 AgentActivity，rumtime 才能在这里看到。`}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExplainBlock({
+  title,
+  items,
+  muted,
+}: {
+  title: string;
+  items: string[];
+  muted?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-[10.5px] text-ink-4 font-semibold mb-1">{title}</div>
+      <ul className="text-[12px] text-ink-2 leading-relaxed pl-4 m-0" style={{ listStyle: "disc", opacity: muted ? 0.85 : 1 }}>
+        {items.map((s, i) => (
+          <li key={i}>{s}</li>
+        ))}
+      </ul>
     </div>
   );
 }

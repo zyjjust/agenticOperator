@@ -24,6 +24,8 @@
 // One LLM call (gemini-3-flash-preview, response_format=json_object).
 
 import OpenAI from "openai";
+import type { LoggerLike } from "@/server/agent-logger";
+import { withLlmTelemetry } from "./instrumented";
 
 export type JdGenInput = {
   client: string;
@@ -182,7 +184,10 @@ Rules:
   (e.g. "无996红线公司背景"); else "无".
 - For Chinese roles use Chinese in posting_title/description; English roles can be EN.`;
 
-export async function llmGenerateJd(input: JdGenInput): Promise<JdGenResult> {
+export async function llmGenerateJd(
+  input: JdGenInput,
+  opts?: { logger?: LoggerLike },
+): Promise<JdGenResult> {
   const gateway = pickGateway();
   const startedAt = Date.now();
   const client = new OpenAI({
@@ -221,17 +226,31 @@ export async function llmGenerateJd(input: JdGenInput): Promise<JdGenResult> {
   if (input.requirements) lines.push(`\n任职要求（原始）:\n${input.requirements}`);
   if (input.niceToHaves) lines.push(`\n加分项（原始）:\n${input.niceToHaves}`);
 
-  const completion = await client.chat.completions.create({
-    model: gateway.model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: lines.join("\n") },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-  });
-  const raw = completion.choices[0]?.message?.content ?? "{}";
-  const parsed = JSON.parse(stripCodeFence(raw));
+  // withLlmTelemetry auto-writes a `tool` AgentActivity (with token counts /
+  // duration) on success and an `anomaly` row on failure when a logger is
+  // supplied. Pass-through otherwise.
+  const { raw, parsed } = await withLlmTelemetry(
+    {
+      logger: opts?.logger,
+      toolName: "LLM.generateJD",
+      model: gateway.model,
+      meta: { client: input.client, title: input.title },
+    },
+    async () => {
+      const completion = await client.chat.completions.create({
+        model: gateway.model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: lines.join("\n") },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+      });
+      const raw = completion.choices[0]?.message?.content ?? "{}";
+      const parsed = JSON.parse(stripCodeFence(raw));
+      return { result: { raw, parsed }, usage: completion.usage };
+    },
+  );
 
   // Build canonical fallbacks from input when LLM misses the mapping.
   const fallbackSalary =

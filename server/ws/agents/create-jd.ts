@@ -35,6 +35,7 @@ import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
 import { isAgenticEnabled } from "../../agentic-state";
 import { forwardToRaas } from "../../inngest/raas-forward";
+import { createAgentLogger } from "../../agent-logger";
 import {
   llmGenerateJd,
   parseSalaryRangeChinese,
@@ -167,27 +168,25 @@ export const createJdAgent = inngest.createFunction(
     const envelope = (event.data ?? {}) as RequirementLoggedEnvelope;
     const payload = envelope.payload ?? (envelope as unknown as RaasRequirementPayload);
 
+    // Single logger bound to this agent — all activity rows go through it.
+    // Each call site below stays inside its own step.run for Inngest
+    // idempotency, but the body is now a one-liner instead of a 7-line
+    // hand-built prisma.create.
+    const log = createAgentLogger({ agent: AGENT_NAME, nodeId: AGENT_ID });
+
     // ── Agentic toggle ──
     const enabled = await step.run("check-agentic-toggle", async () => isAgenticEnabled());
     if (!enabled) {
       logger.info(`[${AGENT_NAME}] agentic OFF — skipping`);
-      await step.run("log-skipped", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "event_received",
-            narrative: `Skipped (agentic OFF) · ${event.name}`,
-            metadata: JSON.stringify({
-              event_name: event.name,
-              event_id: envelope.event_id,
-              entity_id: envelope.entity_id,
-              skipped: true,
-              reason: "agentic mode disabled",
-            }),
-          },
-        });
-      });
+      await step.run("log-skipped", () =>
+        log.event("event_received", `Skipped (agentic OFF) · ${event.name}`, {
+          event_name: event.name,
+          event_id: envelope.event_id,
+          entity_id: envelope.entity_id,
+          skipped: true,
+          reason: "agentic mode disabled",
+        }),
+      );
       return { skipped: true };
     }
 
@@ -195,17 +194,9 @@ export const createJdAgent = inngest.createFunction(
     // normalized requirements. Usually 1 entry.
     const normalized = normalizeRequirements(envelope, payload);
     if (normalized.length === 0) {
-      await step.run("log-no-requisition", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_error",
-            narrative: `No requirement found in ${event.name} payload`,
-            metadata: JSON.stringify({ payload }),
-          },
-        });
-      });
+      await step.run("log-no-requisition", () =>
+        log.error(`No requirement found in ${event.name} payload`, { payload }),
+      );
       throw new Error(
         `${event.name} has no recognizable requirement (need payload.raw_input_data with client_job_title, OR payload.requisitions[], OR payload.requisition_id+title)`,
       );
@@ -218,25 +209,21 @@ export const createJdAgent = inngest.createFunction(
         `[${AGENT_NAME}] generating JD for requisition=${req.requisition_id} title="${req.title}"`,
       );
 
-      await step.run(`log-received-${req.requisition_id}`, async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "event_received",
-            narrative: `createJD invoked · requisition=${req.requisition_id} · title="${req.title}" · ${req.city ?? "—"} · ${req.salaryRangeRaw ?? "—"}`,
-            metadata: JSON.stringify({
-              event_name: event.name,
-              event_id: envelope.event_id,
-              entity_id: envelope.entity_id,
-              requisition_id: req.requisition_id,
-              client: req.client,
-              title: req.title,
-              normalized: req,
-            }),
+      await step.run(`log-received-${req.requisition_id}`, () =>
+        log.event(
+          "event_received",
+          `createJD invoked · requisition=${req.requisition_id} · title="${req.title}" · ${req.city ?? "—"} · ${req.salaryRangeRaw ?? "—"}`,
+          {
+            event_name: event.name,
+            event_id: envelope.event_id,
+            entity_id: envelope.entity_id,
+            requisition_id: req.requisition_id,
+            client: req.client,
+            title: req.title,
+            normalized: req,
           },
-        });
-      });
+        ),
+      );
 
       // Persist requisition (idempotent upsert) + LLM call atomically.
       const out = await step.run(`generate-${req.requisition_id}`, async () => {
@@ -272,27 +259,30 @@ export const createJdAgent = inngest.createFunction(
           },
         });
 
-        const llm = await llmGenerateJd({
-          client: req.client,
-          title: req.title,
-          jobType: req.jobType,
-          recruitmentType: req.recruitmentType,
-          expectedLevel: req.expectedLevel,
-          city: req.city,
-          headcount: req.headcount,
-          salaryRangeMin: req.salaryRangeMin,
-          salaryRangeMax: req.salaryRangeMax,
-          isUrgent: req.isUrgent,
-          isExclusive: req.isExclusive,
-          priority: req.priority,
-          deadline: req.deadline,
-          startDate: req.startDate,
-          firstInterviewFormat: req.firstInterviewFormat,
-          finalInterviewFormat: req.finalInterviewFormat,
-          responsibilities: req.responsibilities,
-          requirements: req.requirements,
-          niceToHaves: req.niceToHaves,
-        } satisfies JdGenInput);
+        const llm = await llmGenerateJd(
+          {
+            client: req.client,
+            title: req.title,
+            jobType: req.jobType,
+            recruitmentType: req.recruitmentType,
+            expectedLevel: req.expectedLevel,
+            city: req.city,
+            headcount: req.headcount,
+            salaryRangeMin: req.salaryRangeMin,
+            salaryRangeMax: req.salaryRangeMax,
+            isUrgent: req.isUrgent,
+            isExclusive: req.isExclusive,
+            priority: req.priority,
+            deadline: req.deadline,
+            startDate: req.startDate,
+            firstInterviewFormat: req.firstInterviewFormat,
+            finalInterviewFormat: req.finalInterviewFormat,
+            responsibilities: req.responsibilities,
+            requirements: req.requirements,
+            niceToHaves: req.niceToHaves,
+          } satisfies JdGenInput,
+          { logger: log },
+        );
 
         const jdId = `jd_${randomUUID().slice(0, 8)}_${Date.now().toString(36)}`;
 
@@ -355,27 +345,22 @@ export const createJdAgent = inngest.createFunction(
         };
       });
 
-      await step.run(`log-generated-${req.requisition_id}`, async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_complete",
-            narrative: `JD generated in ${out.durationMs}ms · jd_id=${out.jdId} · quality=${out.qualityScore} · ${out.marketCompetitiveness} 竞争力 · must=[${out.jdPayload.must_have_skills.slice(0, 4).join(", ")}${out.jdPayload.must_have_skills.length > 4 ? "…" : ""}] · model=${out.modelUsed}`,
-            metadata: JSON.stringify({
-              jd_id: out.jdId,
-              requisition_id: out.requisitionId,
-              quality_score: out.qualityScore,
-              quality_suggestions: out.qualitySuggestions,
-              market_competitiveness: out.marketCompetitiveness,
-              duration_ms: out.durationMs,
-              llm_duration_ms: out.llmDurationMs,
-              model_used: out.modelUsed,
-              jd_payload: out.jdPayload,
-            }),
+      await step.run(`log-generated-${req.requisition_id}`, () =>
+        log.done(
+          `JD generated in ${out.durationMs}ms · jd_id=${out.jdId} · quality=${out.qualityScore} · ${out.marketCompetitiveness} 竞争力 · must=[${out.jdPayload.must_have_skills.slice(0, 4).join(", ")}${out.jdPayload.must_have_skills.length > 4 ? "…" : ""}] · model=${out.modelUsed}`,
+          {
+            jd_id: out.jdId,
+            requisition_id: out.requisitionId,
+            quality_score: out.qualityScore,
+            quality_suggestions: out.qualitySuggestions,
+            market_competitiveness: out.marketCompetitiveness,
+            duration_ms: out.durationMs,
+            llm_duration_ms: out.llmDurationMs,
+            model_used: out.modelUsed,
+            jd_payload: out.jdPayload,
           },
-        });
-      });
+        ),
+      );
 
       // ── JD_GENERATED — single event, partner-spec flat shape (2026-04-28) ──
       const outboundEnvelope = {
@@ -438,30 +423,26 @@ export const createJdAgent = inngest.createFunction(
         return forwardToRaas("JD_GENERATED", outboundEnvelope);
       });
 
-      await step.run(`log-emitted-${out.requisitionId}`, async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "event_emitted",
-            narrative: `Published JD_GENERATED · jd_id=${out.jdId} · title="${out.jdPayload.posting_title}"`,
-            metadata: JSON.stringify({
-              event_name: "JD_GENERATED",
-              event_id: outboundEnvelope.event_id,
-              jd_id: out.jdId,
-              job_requisition_id: out.requisitionId,
-              posting_title: out.jdPayload.posting_title,
-              must_have_skills: out.jdPayload.must_have_skills,
-              nice_to_have_skills: out.jdPayload.nice_to_have_skills,
-              work_years: out.jdPayload.work_years,
-              expected_level: out.jdPayload.expected_level,
-              recruitment_type: out.jdPayload.recruitment_type,
-              salary_range: out.jdPayload.salary_range,
-              quality_score: out.qualityScore,
-            }),
+      await step.run(`log-emitted-${out.requisitionId}`, () =>
+        log.event(
+          "event_emitted",
+          `Published JD_GENERATED · jd_id=${out.jdId} · title="${out.jdPayload.posting_title}"`,
+          {
+            event_name: "JD_GENERATED",
+            event_id: outboundEnvelope.event_id,
+            jd_id: out.jdId,
+            job_requisition_id: out.requisitionId,
+            posting_title: out.jdPayload.posting_title,
+            must_have_skills: out.jdPayload.must_have_skills,
+            nice_to_have_skills: out.jdPayload.nice_to_have_skills,
+            work_years: out.jdPayload.work_years,
+            expected_level: out.jdPayload.expected_level,
+            recruitment_type: out.jdPayload.recruitment_type,
+            salary_range: out.jdPayload.salary_range,
+            quality_score: out.qualityScore,
           },
-        });
-      });
+        ),
+      );
 
       results.push({
         jd_id: out.jdId,

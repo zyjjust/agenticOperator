@@ -15,6 +15,13 @@ import {
 import { useEmHealth, type UseEmHealthResult } from "@/lib/api/em-health";
 import { useEventStats, type EventStats } from "@/lib/api/event-stats";
 import { EventInstancesTab } from "./EventInstancesTab";
+import { EventLogModal } from "./EventLogModal";
+import {
+  classifyEvent,
+  lifecycleBadgeVariant,
+  LIFECYCLE_LABEL,
+  type EventLifecycle,
+} from "@/lib/event-lifecycle";
 
 // Top-level sub-tabs (UX review §A.4). Only "registry" and "stream" are
 // fully populated today — DLQ / rejected / instances / causality wait for
@@ -1546,6 +1553,8 @@ type EventLiveStreamProps = {
   full?: boolean;
 };
 
+type LifecycleFilter = "all" | EventLifecycle;
+
 function EventLiveStream({
   stream,
   paused,
@@ -1557,11 +1566,37 @@ function EventLiveStream({
   full,
 }: EventLiveStreamProps) {
   const { t } = useApp();
+  const [lifecycleFilter, setLifecycleFilter] = React.useState<LifecycleFilter>("all");
+  const [modalEvent, setModalEvent] = React.useState<InngestEventRow | null>(null);
+
+  // Annotate every event with its lifecycle once, so badge rendering and
+  // filtering both share the same classification (and we don't pay the
+  // classification cost twice per row).
+  const annotated = React.useMemo(
+    () =>
+      stream.events.map((e) => ({
+        ev: e,
+        cls: classifyEvent(e),
+      })),
+    [stream.events],
+  );
+
+  const lifecycleCounts = React.useMemo(() => {
+    const c: Record<EventLifecycle, number> = {
+      received: 0,
+      emitted: 0,
+      completed: 0,
+      failed: 0,
+    };
+    for (const a of annotated) c[a.cls.lifecycle]++;
+    return c;
+  }, [annotated]);
 
   const filtered = React.useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return stream.events;
-    return stream.events.filter((e) => {
+    return annotated.filter(({ ev: e, cls }) => {
+      if (lifecycleFilter !== "all" && cls.lifecycle !== lifecycleFilter) return false;
+      if (!q) return true;
       if (e.name.toLowerCase().includes(q)) return true;
       const d = e.data as { payload?: Record<string, unknown>; entity_id?: unknown } | null;
       const p = d?.payload as Record<string, unknown> | undefined;
@@ -1575,7 +1610,7 @@ function EventLiveStream({
       ];
       return fields.some((v) => v != null && String(v).toLowerCase().includes(q));
     });
-  }, [stream.events, filter]);
+  }, [annotated, filter, lifecycleFilter]);
 
   // Track which IDs have been rendered before so first-time IDs flash briefly.
   const seenIds = React.useRef<Set<string>>(new Set());
@@ -1594,6 +1629,14 @@ function EventLiveStream({
     const tid = setTimeout(() => setFreshIds(new Set()), 900);
     return () => clearTimeout(tid);
   }, [stream.events, paused]);
+
+  const lifecycleChips: Array<{ id: LifecycleFilter; label: string; count: number | null }> = [
+    { id: "all", label: "all", count: stream.events.length },
+    { id: "received", label: "received", count: lifecycleCounts.received },
+    { id: "emitted", label: "emitted", count: lifecycleCounts.emitted },
+    { id: "completed", label: "completed", count: lifecycleCounts.completed },
+    { id: "failed", label: "failed", count: lifecycleCounts.failed },
+  ];
 
   const stateBadge = paused
     ? { variant: "info" as const, label: "paused" }
@@ -1631,6 +1674,39 @@ function EventLiveStream({
             </Btn>
           )}
         </div>
+        <div className="flex flex-wrap gap-1">
+          {lifecycleChips.map((c) => {
+            const active = lifecycleFilter === c.id;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setLifecycleFilter(c.id)}
+                className="bg-transparent border cursor-pointer mono text-[10px] rounded-sm transition-colors"
+                title={
+                  c.id === "all"
+                    ? "全部事件"
+                    : c.id === "received"
+                      ? "外部入口事件（webhook / RAAS）"
+                      : c.id === "emitted"
+                        ? "AO 内部 agent 级联（caused_by）发出的事件"
+                        : c.id === "completed"
+                          ? "Inngest 函数运行完成信号"
+                          : "Inngest 函数运行失败信号"
+                }
+                style={{
+                  padding: "1px 7px",
+                  borderColor: active ? "var(--c-accent)" : "var(--c-line)",
+                  background: active ? "var(--c-accent-bg)" : "var(--c-panel)",
+                  color: active ? "var(--c-accent)" : "var(--c-ink-2)",
+                  fontWeight: active ? 600 : 500,
+                }}
+              >
+                {c.label}
+                <span className="ml-1 text-ink-4">{c.count ?? 0}</span>
+              </button>
+            );
+          })}
+        </div>
         <label className="flex items-center gap-1.5 text-[10.5px] text-ink-3 cursor-pointer mono">
           <input
             type="checkbox"
@@ -1654,32 +1730,55 @@ function EventLiveStream({
         {filtered.length === 0 && (
           <div className="text-ink-3 text-[12px]" style={{ padding: 18, textAlign: "center" }}>
             {stream.connected
-              ? "无事件 — 触发 /agent-demo 或等 RAAS 推送"
+              ? lifecycleFilter !== "all"
+                ? `当前 lifecycle 过滤为 \`${lifecycleFilter}\`，无匹配事件`
+                : "无事件 — 触发 /agent-demo 或等 RAAS 推送"
               : "正在连接 Inngest…"}
           </div>
         )}
-        {filtered.map((e) => (
-          <StreamRow key={e.id} ev={e} fresh={freshIds.has(e.id)} />
+        {filtered.map(({ ev: e, cls }) => (
+          <StreamRow
+            key={e.id}
+            ev={e}
+            lifecycle={cls.lifecycle}
+            referencedEventName={cls.referencedEventName}
+            fresh={freshIds.has(e.id)}
+            onExpand={() => setModalEvent(e)}
+          />
         ))}
       </div>
 
       <div className="border-t border-line flex items-center text-[11px] text-ink-4" style={{ padding: "10px 14px" }}>
         <span className="mono">
           {filtered.length} shown
-          {filter && ` · of ${stream.events.length}`}
+          {(filter || lifecycleFilter !== "all") && ` · of ${stream.events.length}`}
           {stream.lastFetchAt && ` · ${stream.lastFetchAt.toLocaleTimeString(undefined, { hour12: false })}`}
         </span>
         <div className="flex-1" />
         <Btn size="sm" variant="ghost" style={{ padding: "0 6px" }}>{t("em_replay")}</Btn>
       </div>
+
+      <EventLogModal event={modalEvent} onClose={() => setModalEvent(null)} />
     </aside>
   );
 }
 
-function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
+function StreamRow({
+  ev,
+  lifecycle,
+  referencedEventName,
+  fresh,
+  onExpand,
+}: {
+  ev: InngestEventRow;
+  lifecycle: EventLifecycle;
+  referencedEventName?: string;
+  fresh: boolean;
+  onExpand: () => void;
+}) {
   const [expanded, setExpanded] = React.useState(false);
   const def = EVENT_CATALOG.find((x) => x.name === ev.name);
-  const isErr = def?.kind === "error" || def?.kind === "gate";
+  const isErr = def?.kind === "error" || def?.kind === "gate" || lifecycle === "failed";
   const dot = kindDot(def?.kind ?? "domain");
 
   const tsMs = ev.received_at
@@ -1706,6 +1805,11 @@ function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
     "—";
   const sub = def?.subscribers?.[0] ?? "—";
 
+  // For inngest/function.* completion signals, the row's "name" is the
+  // system event; promote the original domain event name into the metadata
+  // line so the human can spot it.
+  const isSystem = ev.name.startsWith("inngest/");
+
   return (
     <div
       onClick={() => setExpanded((v) => !v)}
@@ -1723,8 +1827,11 @@ function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
         }}
       />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
+        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
           <span className="mono text-[10px] text-ink-4">{time}</span>
+          <Badge variant={lifecycleBadgeVariant(lifecycle)} dot>
+            {LIFECYCLE_LABEL[lifecycle]}
+          </Badge>
           <span
             className="mono text-[11px] font-semibold"
             style={{ color: isErr ? "var(--c-err)" : "var(--c-ink-1)" }}
@@ -1736,7 +1843,13 @@ function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
           )}
         </div>
         <div className="mono text-[10px] text-ink-4 overflow-hidden text-ellipsis whitespace-nowrap">
-          job={String(job).slice(-20)} · tenant={String(tenant).slice(-14)} · {sub}
+          {isSystem && referencedEventName ? (
+            <>→ {referencedEventName}</>
+          ) : (
+            <>
+              job={String(job).slice(-20)} · tenant={String(tenant).slice(-14)} · {sub}
+            </>
+          )}
         </div>
         {expanded && (
           <pre
@@ -1755,6 +1868,17 @@ function StreamRow({ ev, fresh }: { ev: InngestEventRow; fresh: boolean }) {
           </pre>
         )}
       </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onExpand();
+        }}
+        title="全屏查看 log"
+        className="bg-transparent border-0 text-ink-4 hover:text-ink-1 cursor-pointer"
+        style={{ padding: 2, fontSize: 12, lineHeight: 1 }}
+      >
+        ⛶
+      </button>
     </div>
   );
 }

@@ -23,6 +23,7 @@ import path from "node:path";
 import { inngest } from "../../inngest/client";
 import { prisma } from "../../db";
 import { isAgenticEnabled } from "../../agentic-state";
+import { createAgentLogger } from "../../agent-logger";
 import { getMinIOClient, isMinIOConfigured } from "../../llm/minio-client";
 import {
   isRoboHireConfigured,
@@ -144,6 +145,9 @@ export const sampleResumeParserAgent = inngest.createFunction(
     const payload = envelope.payload;
     const sourceLabel = `${payload.bucket}/${payload.object_key}`;
 
+    // Single logger for this run — every step.run("log-...") below uses it.
+    const log = createAgentLogger({ agent: AGENT_NAME, nodeId: AGENT_ID });
+
     // ── Agentic on/off toggle (server/agentic-state.ts) ──
     // When OFF, log a single AgentActivity row + return without
     // touching MinIO / RoboHire / emitting events. UI's /workflow
@@ -155,23 +159,15 @@ export const sampleResumeParserAgent = inngest.createFunction(
       logger.info(
         `[${AGENT_NAME}] agentic mode is OFF — skipping ${sourceLabel}`,
       );
-      await step.run("log-skipped", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "event_received",
-            narrative: `Skipped (agentic OFF) · ${sourceLabel}`,
-            metadata: JSON.stringify({
-              event_name: "RESUME_DOWNLOADED",
-              event_id: envelope.event_id,
-              upload_id: payload.upload_id,
-              skipped: true,
-              reason: "agentic mode disabled",
-            }),
-          },
-        });
-      });
+      await step.run("log-skipped", () =>
+        log.event("event_received", `Skipped (agentic OFF) · ${sourceLabel}`, {
+          event_name: "RESUME_DOWNLOADED",
+          event_id: envelope.event_id,
+          upload_id: payload.upload_id,
+          skipped: true,
+          reason: "agentic mode disabled",
+        }),
+      );
       return { skipped: true, reason: "agentic mode disabled" };
     }
 
@@ -179,21 +175,13 @@ export const sampleResumeParserAgent = inngest.createFunction(
       `[${AGENT_NAME}] received RESUME_DOWNLOADED — ${sourceLabel} upload_id=${payload.upload_id ?? "—"}`,
     );
 
-    await step.run("log-received", async () => {
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "event_received",
-          narrative: `Received RESUME_DOWNLOADED · ${sourceLabel}`,
-          metadata: JSON.stringify({
-            event_name: "RESUME_DOWNLOADED",
-            event_id: envelope.event_id,
-            payload,
-          }),
-        },
-      });
-    });
+    await step.run("log-received", () =>
+      log.event("event_received", `Received RESUME_DOWNLOADED · ${sourceLabel}`, {
+        event_name: "RESUME_DOWNLOADED",
+        event_id: envelope.event_id,
+        payload,
+      }),
+    );
 
     // Single fat step — Buffer can't cross step.run JSON boundary.
     const extracted: FetchAndParseResult = await step.run("fetch-and-parse", async (): Promise<FetchAndParseResult> => {
@@ -201,7 +189,7 @@ export const sampleResumeParserAgent = inngest.createFunction(
 
       // ── Inline-text fixture path (test only) ─────────────────────
       if (payload.resume_text) {
-        const llm = await llmExtractRoboHireShape(payload.resume_text);
+        const llm = await llmExtractRoboHireShape(payload.resume_text, { logger: log });
         return {
           parsedData: llm.parsed as unknown as Record<string, unknown>,
           mode: "llm-fixture" as const,
@@ -266,7 +254,7 @@ export const sampleResumeParserAgent = inngest.createFunction(
           const fallbackReason = `robohire: ${reason}`;
           const isPdf = filename.toLowerCase().endsWith(".pdf");
           const text = isPdf ? await pdfBufferToText(buf) : buf.toString("utf-8");
-          const llm = await llmExtractRoboHireShape(text);
+          const llm = await llmExtractRoboHireShape(text, { logger: log });
           return {
             parsedData: llm.parsed as unknown as Record<string, unknown>,
             mode: "llm-fallback",
@@ -288,7 +276,7 @@ export const sampleResumeParserAgent = inngest.createFunction(
       // ── No RoboHire configured — LLM only ────────────────────────
       const isPdf = filename.toLowerCase().endsWith(".pdf");
       const text = isPdf ? await pdfBufferToText(buf) : buf.toString("utf-8");
-      const llm = await llmExtractRoboHireShape(text);
+      const llm = await llmExtractRoboHireShape(text, { logger: log });
       return {
         parsedData: llm.parsed as unknown as Record<string, unknown>,
         mode: "llm-only",
@@ -306,66 +294,51 @@ export const sampleResumeParserAgent = inngest.createFunction(
       };
     });
 
-    await step.run("log-fetched", async () => {
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "tool",
-          narrative: `Fetched ${extracted.inputBytes} bytes · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
-          metadata: JSON.stringify({
-            mode: extracted.mode,
-            source: extracted.sourceDescription,
-            input_bytes: extracted.inputBytes,
-            text_chars: extracted.textChars,
-            request_id: extracted.requestId,
-            cached: extracted.cached,
-            fallback_reason: extracted.fallbackReason,
-          }),
+    await step.run("log-fetched", () =>
+      log.tool(
+        `Fetched ${extracted.inputBytes} bytes · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
+        {
+          mode: extracted.mode,
+          source: extracted.sourceDescription,
+          input_bytes: extracted.inputBytes,
+          text_chars: extracted.textChars,
+          request_id: extracted.requestId,
+          cached: extracted.cached,
+          fallback_reason: extracted.fallbackReason,
         },
-      });
-    });
+      ),
+    );
 
-    await step.run("log-parsed", async () => {
+    await step.run("log-parsed", () => {
       const d = extracted.parsedData as any;
       const candName = d?.name ?? "—";
       const expCount = Array.isArray(d?.experience) ? d.experience.length : 0;
       const eduCount = Array.isArray(d?.education) ? d.education.length : 0;
       const skillCount = countSkills(d?.skills);
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "agent_complete",
-          narrative: `Parse complete in ${extracted.parseDurationMs}ms · ${skillCount} skills · ${expCount} jobs · ${eduCount} edu · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
-          metadata: JSON.stringify({
-            mode: extracted.mode,
-            model_used: extracted.modelUsed,
-            duration_ms: extracted.durationMs,
-            parse_duration_ms: extracted.parseDurationMs,
-            request_id: extracted.requestId,
-            document_id: extracted.documentId,
-            saved_as: extracted.savedAs,
-            cached: extracted.cached,
-            candidate_name: candName,
-            parsed: extracted.parsedData,
-          }),
+      return log.done(
+        `Parse complete in ${extracted.parseDurationMs}ms · ${skillCount} skills · ${expCount} jobs · ${eduCount} edu · mode=${extracted.mode}${extracted.cached ? " (cached)" : ""}`,
+        {
+          mode: extracted.mode,
+          model_used: extracted.modelUsed,
+          duration_ms: extracted.durationMs,
+          parse_duration_ms: extracted.parseDurationMs,
+          request_id: extracted.requestId,
+          document_id: extracted.documentId,
+          saved_as: extracted.savedAs,
+          cached: extracted.cached,
+          candidate_name: candName,
+          parsed: extracted.parsedData,
         },
-      });
+      );
     });
 
     if (!hasMeaningfulData(extracted.parsedData)) {
-      await step.run("log-sanity-fail", async () => {
-        await prisma.agentActivity.create({
-          data: {
-            nodeId: AGENT_ID,
-            agentName: AGENT_NAME,
-            type: "agent_error",
-            narrative: "Sanity check failed — parser returned empty data, not emitting RESUME_PROCESSED",
-            metadata: JSON.stringify({ parsed: extracted.parsedData }),
-          },
-        });
-      });
+      await step.run("log-sanity-fail", () =>
+        log.error(
+          "Sanity check failed — parser returned empty data, not emitting RESUME_PROCESSED",
+          { parsed: extracted.parsedData },
+        ),
+      );
       throw new Error("Parser returned no meaningful fields");
     }
 
@@ -399,26 +372,22 @@ export const sampleResumeParserAgent = inngest.createFunction(
       return forwardToRaas("RESUME_PROCESSED", outboundEnvelope);
     });
 
-    await step.run("log-emitted-resume-processed", async () => {
+    await step.run("log-emitted-resume-processed", () => {
       const d = extracted.parsedData as any;
-      await prisma.agentActivity.create({
-        data: {
-          nodeId: AGENT_ID,
-          agentName: AGENT_NAME,
-          type: "event_emitted",
-          narrative: `Published RESUME_PROCESSED · candidate=${d?.name ?? "—"} · upload_id=${payload.upload_id ?? "—"}`,
-          metadata: JSON.stringify({
-            event_name: "RESUME_PROCESSED",
-            event_id: outboundEnvelope.event_id,
-            upload_id: payload.upload_id,
-            candidate_name: d?.name,
-            duration_ms: extracted.durationMs,
-            parser_version: PARSER_VERSION,
-            mode: extracted.mode,
-            request_id: extracted.requestId,
-          }),
+      return log.event(
+        "event_emitted",
+        `Published RESUME_PROCESSED · candidate=${d?.name ?? "—"} · upload_id=${payload.upload_id ?? "—"}`,
+        {
+          event_name: "RESUME_PROCESSED",
+          event_id: outboundEnvelope.event_id,
+          upload_id: payload.upload_id,
+          candidate_name: d?.name,
+          duration_ms: extracted.durationMs,
+          parser_version: PARSER_VERSION,
+          mode: extracted.mode,
+          request_id: extracted.requestId,
         },
-      });
+      );
     });
 
     logger.info(

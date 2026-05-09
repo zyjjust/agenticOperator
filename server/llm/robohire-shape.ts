@@ -16,6 +16,8 @@
 
 import OpenAI from "openai";
 import { extractText, getDocumentProxy } from "unpdf";
+import type { LoggerLike } from "@/server/agent-logger";
+import { withLlmTelemetry } from "./instrumented";
 
 // ─── Types — mirror RoboHire docs §2 + §3 verbatim ────────────────
 
@@ -168,6 +170,7 @@ export type LlmExtractResult = {
 
 export async function llmExtractRoboHireShape(
   resumeText: string,
+  opts?: { logger?: LoggerLike },
 ): Promise<LlmExtractResult> {
   const gateway = pickGateway();
   const startedAt = Date.now();
@@ -177,18 +180,31 @@ export async function llmExtractRoboHireShape(
     timeout: 60_000,
   });
   const trimmed = resumeText.slice(0, 12_000);
-  const completion = await client.chat.completions.create({
-    model: gateway.model,
-    messages: [
-      { role: "system", content: PARSE_PROMPT },
-      { role: "user", content: trimmed },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0,
-  });
-  const raw = completion.choices[0]?.message?.content ?? "{}";
-  const json = JSON.parse(stripCodeFence(raw));
-  const parsed = normalizeParsedData(json);
+  const { raw, parsed } = await withLlmTelemetry(
+    {
+      logger: opts?.logger,
+      toolName: "LLM.extractResume",
+      model: gateway.model,
+      meta: { prompt_chars: trimmed.length },
+    },
+    async () => {
+      const completion = await client.chat.completions.create({
+        model: gateway.model,
+        messages: [
+          { role: "system", content: PARSE_PROMPT },
+          { role: "user", content: trimmed },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0,
+      });
+      const raw = completion.choices[0]?.message?.content ?? "{}";
+      const json = JSON.parse(stripCodeFence(raw));
+      return {
+        result: { raw, parsed: normalizeParsedData(json) },
+        usage: completion.usage,
+      };
+    },
+  );
   return {
     parsed,
     modelUsed: gateway.model,
@@ -299,6 +315,7 @@ export type LlmMatchResult = {
 export async function llmMatchRoboHireShape(
   resumeText: string,
   jdText: string,
+  opts?: { logger?: LoggerLike },
 ): Promise<LlmMatchResult> {
   const gateway = pickGateway();
   const startedAt = Date.now();
@@ -308,18 +325,31 @@ export async function llmMatchRoboHireShape(
     timeout: 60_000,
   });
   const userMsg = `## Job Description\n\n${jdText.slice(0, 4_000)}\n\n## Candidate Resume\n\n${resumeText.slice(0, 8_000)}`;
-  const completion = await client.chat.completions.create({
-    model: gateway.model,
-    messages: [
-      { role: "system", content: MATCH_PROMPT },
-      { role: "user", content: userMsg },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0,
-  });
-  const raw = completion.choices[0]?.message?.content ?? "{}";
-  const json = JSON.parse(stripCodeFence(raw));
-  const match = normalizeMatchData(json);
+  const { raw, match } = await withLlmTelemetry(
+    {
+      logger: opts?.logger,
+      toolName: "LLM.matchResume",
+      model: gateway.model,
+      meta: { jd_chars: jdText.length, resume_chars: resumeText.length },
+    },
+    async () => {
+      const completion = await client.chat.completions.create({
+        model: gateway.model,
+        messages: [
+          { role: "system", content: MATCH_PROMPT },
+          { role: "user", content: userMsg },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0,
+      });
+      const raw = completion.choices[0]?.message?.content ?? "{}";
+      const json = JSON.parse(stripCodeFence(raw));
+      return {
+        result: { raw, match: normalizeMatchData(json) },
+        usage: completion.usage,
+      };
+    },
+  );
   return {
     match,
     modelUsed: gateway.model,
