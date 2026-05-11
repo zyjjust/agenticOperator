@@ -48,6 +48,9 @@ export function RunTraceTimeline({ runId, externalData, pollIntervalMs = 4000 }:
       try {
         const r = await fetchJson<TraceResponse>(
           `/api/runs/${encodeURIComponent(runId)}/trace`,
+          // Trace endpoint fans out to local Inngest per event (3s ea);
+          // bump from default 5s to 15s so a slow Inngest doesn't kill it.
+          { timeoutMs: 15_000 },
         );
         if (cancelled) return;
         setData(r);

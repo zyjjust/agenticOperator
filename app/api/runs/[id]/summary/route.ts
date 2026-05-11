@@ -109,6 +109,22 @@ export async function GET(_req: Request, ctx: RouteCtx): Promise<Response> {
     return NextResponse.json(body);
   }
 
+  // Skip LLM entirely when there's no AgentActivity AND no steps. The LLM
+  // would hallucinate agent names from thin air (verified in production:
+  // it invented `JD_Writer / Recruiter_Agent / Channel_Distributor` for an
+  // empty run). Better to return an honest "no data" message + the
+  // deterministic shell.
+  const hasAnyAgentData = agentBreakdown.length > 0 || activities.length > 0;
+  if (!hasAnyAgentData) {
+    const body: RunSummaryResponse = {
+      ...baseShape,
+      text: emptyRunNotice(run),
+      source: "fallback",
+    };
+    cache.set(key, body);
+    return NextResponse.json(body);
+  }
+
   try {
     const { text, modelUsed, durationMs: durationLLMms } = await chatComplete({
       system: SYSTEM_PROMPT,
@@ -203,29 +219,35 @@ function computeAgentBreakdown(
 const SYSTEM_PROMPT = `你是 Agentic Operator 的运行报告生成器。
 你**完全了解整个多 agent 工作流的拓扑**——每个 agent 的职责、订阅哪些事件、emit 哪些事件、谁在它的上下游。所以你的总结必须是**多 agent 视角的**，不是把每个 agent 当孤岛说一遍。
 
+⚠ 硬约束（违反 = 输出失败）：
+1. agent 名字、事件名、step 名、数字、时间戳——**只能用用户输入里出现过的**。绝不允许编造（如 \`JD_Writer\`、\`Recruiter_Agent\`、\`Channel_Distributor\`、\`Resume_Sourcing_Agent\` 这种不在 AGENT_MAP 里的虚构名字）。
+2. 如果 "Per-agent breakdown" 段落为空 OR 标 "(无活动数据)"，**不要伪造工作流路径**。直接说："这条 run 在 AgentActivity 表中无任何记录，无法做多 agent 路径分析。仅有 WorkflowRun 主表的元信息（trigger、status、suspendedReason）可参考。"
+3. 工作流拓扑只能引用 "Workflow topology context" 段落里实际列出的 agent。其他 agent 不存在。
+
 格式（Markdown）：
 ## 概述
-（1~2 句：触发事件 / 总耗时 / 整体结果。指出这条 run 走到了工作流的哪个阶段——比如"在 JD_GENERATED 阶段停下，未进入 Resume 收集"。）
+（1~2 句：触发事件 / 总耗时 / 整体结果 / 当前阶段。基于实际数据，不是猜测。）
 
 ## 工作流路径
-基于"实际事件链 vs 期望路径"：
-- 用 → 串起这条 run 实际激活的 agent 顺序
-- 用 ⊘ 标出**期望但未触发**的下游 agent（基于 AGENT_MAP 的 emits→triggers 边）
-- 解释为何走到这步停下（缺失字段？被驳回？等待人工？）
+**仅当**有真实 per-agent breakdown 数据时填这段：
+- 用 → 串起这条 run 实际激活的 agent（必须来自 breakdown）
+- 用 ⊘ 标出 "Workflow topology context" 中标 "expected but not activated" 的 agent
+- 解释停滞原因（用 suspendedReason 或失败的 step.error，不要猜）
+
+**否则**：写 "无 AgentActivity 数据，无法重建路径。请先按 README 接通 runtime 的活动日志推送（POST /api/runs/[id]/activity）。"
 
 ## 各 Agent 干了什么
-按工作流顺序列出参与的 agent。每段 1~2 行，要包含：
-- 它在工作流里的**角色**（用 agent function summary 而不是泛泛"处理了"）
-- 这条 run 里它具体做了什么（基于 narrative + tool calls + decisions）
-- 上下游链接（"接到 X 事件 → 产出 Y 事件 → 谁的输入"）
+**仅当** breakdown 非空时列出。每段 1~2 行：
+- agent 角色（用 function summary）
+- 这条 run 里具体做了什么（用 narrative）
 
 ## 异常 / 关注点
-若有 failed step / anomaly / 长耗时，列出来。**特别标出"该跑但没跑"的 agent**——这往往比已跑的失败更重要。
+列出 step.failed / error / anomaly，没有就写 "未发现异常"。
 
 ## 下一步建议
-1~2 条**具体可操作**的建议，引用工作流位置（"建议人工介入 HSM 澄清节点" 而不是模糊的"建议人工介入"）。
+1~2 条具体建议。如果数据为空，建议是 "接通 AgentActivity 写入" 而不是业务建议。
 
-总长度 300~500 字。绝对不要编造数字 / agent 名字 / 事件名。`;
+总长度 250~400 字。简洁优于详细。诚实优于华丽。`;
 
 function buildUserPrompt(
   run: { id: string; triggerEvent: string; status: string; startedAt: Date; completedAt: Date | null; suspendedReason: string | null; triggerData: string },
@@ -346,6 +368,43 @@ function deterministicSummary(
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+// Honest "no data" notice rendered when a run has 0 AgentActivity AND
+// 0 WorkflowStep rows. Without this, calling the LLM on emptiness leads
+// to it inventing agent names like `JD_Writer / Recruiter_Agent` that
+// don't exist in AGENT_MAP.
+function emptyRunNotice(run: {
+  triggerEvent: string;
+  status: string;
+  startedAt: Date;
+  suspendedReason: string | null;
+}): string {
+  const ageMs = Date.now() - run.startedAt.getTime();
+  const ageMin = Math.round(ageMs / 60_000);
+  return `## 概述
+触发事件 \`${run.triggerEvent}\`，当前状态 \`${run.status}\`${
+    run.suspendedReason ? `（${run.suspendedReason}）` : ""
+  }。run 开始于 **${ageMin} 分钟前**。
+
+## 数据状态
+**这条 run 在 AgentActivity 表里 0 行记录**，在 WorkflowStep 表里也 0 步。无法做有意义的多 agent 路径分析或行为总结——LLM 没有可信数据可依，强行生成会产生幻觉的 agent 名（如 \`JD_Writer\` 等不存在于 AGENT_MAP 的虚构名）。
+
+## 为什么是空的
+- AO-main 已禁用所有 Inngest function（见 \`server/inngest/functions.ts\` 的 \`allFunctions: []\`），不会自己写 AgentActivity
+- 实际 runtime 在 sibling 项目 \`resume-parser-agent\` (port 3020)，但它没接 AO-main 的 DB
+- 所以即使 RPA agent 跑了，活动日志也不会落到这里
+
+## 怎么修
+任选其一：
+1. RPA runtime 调用 \`POST /api/runs/[runId]/activity\` 把活动行 push 进来（详见路由文件注释）
+2. 或者在 AO-main 的 \`server/inngest/functions.ts\` 里 re-enable agents（取消注释 \`allFunctions\` 数组）
+3. 或者用 \`POST /api/runs/[runId]/activity\` 手动塞测试数据进来验证 UI
+
+## 下一步建议
+接通活动日志契约后，重新点 "重新生成"——LLM 才有真实数据做多 agent 分析。
+
+> 这不是 LLM 不能用，是这条 run 没有数据可让它分析。`;
 }
 
 // Given the agents that ACTIVATED in this run, plus the events seen in

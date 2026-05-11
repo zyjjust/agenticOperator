@@ -1631,11 +1631,11 @@ function EventLiveStream({
   }, [stream.events, paused]);
 
   const lifecycleChips: Array<{ id: LifecycleFilter; label: string; count: number | null }> = [
-    { id: "all", label: "all", count: stream.events.length },
-    { id: "received", label: "received", count: lifecycleCounts.received },
-    { id: "emitted", label: "emitted", count: lifecycleCounts.emitted },
-    { id: "completed", label: "completed", count: lifecycleCounts.completed },
-    { id: "failed", label: "failed", count: lifecycleCounts.failed },
+    { id: "all", label: t("em_lc_all"), count: stream.events.length },
+    { id: "received", label: t("em_lc_received"), count: lifecycleCounts.received },
+    { id: "emitted", label: t("em_lc_emitted"), count: lifecycleCounts.emitted },
+    { id: "completed", label: t("em_lc_completed"), count: lifecycleCounts.completed },
+    { id: "failed", label: t("em_lc_failed"), count: lifecycleCounts.failed },
   ];
 
   const stateBadge = paused
@@ -1684,14 +1684,14 @@ function EventLiveStream({
                 className="bg-transparent border cursor-pointer mono text-[10px] rounded-sm transition-colors"
                 title={
                   c.id === "all"
-                    ? "全部事件"
+                    ? t("em_lc_all_hint")
                     : c.id === "received"
-                      ? "外部入口事件（webhook / RAAS）"
+                      ? t("em_lc_received_hint")
                       : c.id === "emitted"
-                        ? "AO 内部 agent 级联（caused_by）发出的事件"
+                        ? t("em_lc_emitted_hint")
                         : c.id === "completed"
-                          ? "Inngest 函数运行完成信号"
-                          : "Inngest 函数运行失败信号"
+                          ? t("em_lc_completed_hint")
+                          : t("em_lc_failed_hint")
                 }
                 style={{
                   padding: "1px 7px",

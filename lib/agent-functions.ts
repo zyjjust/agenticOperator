@@ -297,6 +297,27 @@ export const AGENT_FUNCTIONS: AgentFunctionMeta[] = [
     outputs: ["PACKAGE_APPROVED"],
   },
   {
+    // Not a workflow agent — system-level meta agent for the per-run
+    // chatbot. Surfacing it here lets /api/agents/Chatbot/explain return
+    // useful context, and makes Chatbot appear in cross-agent UIs (logs,
+    // /workflow Inspector if user navigates to it) consistently.
+    short: "Chatbot",
+    summary: "Run-scoped 问答助手；调底层 API 取真数据回答用户的问题。",
+    operations: [
+      "接收用户自然语言问题",
+      "用 OpenAI tool-use 协议从 5 个只读工具中挑选合适的（getActivityLog / getAgentStats / getEventTrace / getRunSummary / getAgentInfo）",
+      "把工具结果合成回答；每个事实附 inline citation",
+      "回答完成后写两条 AgentActivity（user 问 + AI 答）作为审计 trail",
+    ],
+    tools: ["LLM (gemini-3-flash-preview / gpt-4o-mini)", "5 个只读 API 工具"],
+    inputs: ["用户在 AI 助手 Tab 输入的自由文本"],
+    outputs: ["chat 回复（markdown）+ sources[] 引用 + 2 条 AgentActivity 审计行"],
+    failureModes: [
+      "LLM 网关未配置 → 走 keyword-route fallback",
+      "LLM 调工具调到第 4 轮还没结束 → 强制收尾（max_turns 保护）",
+    ],
+  },
+  {
     short: "PortalSubmitter",
     summary: "把推荐包提交到客户门户（API / 表单自动化）。",
     operations: [

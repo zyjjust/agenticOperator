@@ -112,6 +112,9 @@ function SummaryBody({ runId }: { runId: string }) {
     try {
       const r = await fetchJson<RunSummaryResponse>(
         `/api/runs/${encodeURIComponent(runId)}/summary`,
+        // LLM calls reliably take 6-15s; default fetchJson timeout is 5s
+        // which always times out on real summaries. 60s covers slow days.
+        { timeoutMs: 60_000 },
       );
       setResp(r);
     } catch (e) {

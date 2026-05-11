@@ -11,6 +11,9 @@ import type { ExplainResponse } from "@/app/api/agents/[short]/explain/route";
 import { LogStream } from "@/components/shared/LogStream";
 import { useAgentsHealth } from "@/lib/api/agents-health";
 import type { AgentHealth, AgentHealthStatus } from "@/app/api/agents/health/route";
+import { NeighborhoodPanel } from "./NeighborhoodPanel";
+import { RecentEntitiesPanel } from "./RecentEntitiesPanel";
+import { AgentChatbot } from "./AgentChatbot";
 
 type NodeKind = "trigger" | "agent" | "branch" | "hitl" | "guard" | "done";
 
@@ -75,6 +78,18 @@ export function WorkflowContent() {
   ];
 
   const sel = nodes.find((n) => n.id === selectedId) || nodes[0];
+
+  // Resolve a canonical agent short → the matching NodeDef on the canvas.
+  // Used by NeighborhoodPanel to jump selection without scrolling.
+  const jumpToAgent = React.useCallback(
+    (short: string) => {
+      const target = nodes.find((n) => nodeAgentShort(n) === short);
+      if (target) setSelectedId(target.id);
+    },
+    // `nodes` is a stable literal in this component body — refs only on `t`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   // Real-time health from /api/agents/health (5-min window).
   // Replaces the legacy /api/workflow/active poll AND the hardcoded
@@ -263,6 +278,7 @@ export function WorkflowContent() {
                 ? health.byShort.get(nodeAgentShort(sel) ?? "") ?? null
                 : null
             }
+            onJumpToAgent={jumpToAgent}
           />
         </aside>
       </div>
@@ -407,9 +423,11 @@ function WFNode({
 function Inspector({
   node,
   liveHealth,
+  onJumpToAgent,
 }: {
   node: NodeDef;
   liveHealth: AgentHealth | null;
+  onJumpToAgent: (short: string) => void;
 }) {
   const { t } = useApp();
   const Icon = Ic[node.icon];
@@ -432,117 +450,16 @@ function Inspector({
         </div>
       </div>
       <div className="overflow-auto py-1.5">
+        <NeighborhoodPanel short={agentShort} onJump={onJumpToAgent} />
         {agentShort && liveHealth !== undefined && (
           <AgentHealthPanel short={agentShort} health={liveHealth} />
         )}
+        {agentShort && <RecentEntitiesPanel short={agentShort} />}
         {agentShort && <AgentExplainPanel short={agentShort} />}
+        {agentShort && <AgentChatbot short={agentShort} />}
         {agentShort && <AgentLogsPanel short={agentShort} />}
-        <InspectField label={t("wf_when")} value="event == 'ANALYSIS_COMPLETED' && completeness >= 0.9" mono />
-        <InspectField label={t("wf_tools")}>
-          <div className="flex flex-wrap gap-1">
-            <Badge><Ic.db /> KB.readJob</Badge>
-            <Badge><Ic.sparkle /> LLM.generateJD</Badge>
-            <Badge><Ic.book /> Template.render</Badge>
-            <Badge><Ic.shield /> Compliance.lint</Badge>
-          </div>
-        </InspectField>
-        <InspectField label={t("wf_input")}>
-          <pre className="mono text-[11px] bg-panel border border-line rounded-sm text-ink-2 whitespace-pre-wrap m-0" style={{ padding: "8px 10px" }}>
-{`{
-  job_id, client_id,
-  analysis: { skills[], seniority, comp_band },
-  hsm_preferences: { tone, channels[] }
-}`}
-          </pre>
-        </InspectField>
-        <InspectField label={t("wf_output")}>
-          <pre className="mono text-[11px] bg-panel border border-line rounded-sm text-ink-2 whitespace-pre-wrap m-0" style={{ padding: "8px 10px" }}>
-{`{
-  jd_md, jd_html,
-  variants: [channel→title+hook],
-  compliance: { pii: bool, eeo_flags[] },
-  next: 'JD_GENERATED'
-}`}
-          </pre>
-        </InspectField>
-        <InspectField label={t("wf_on_error")}>
-          <div className="flex flex-col gap-1.5">
-            <OnErrorRow icon="clock" label={t("wf_retry") + " · 指数退避"} kind="ok" />
-            <OnErrorRow icon="user" label={t("wf_escalate") + " → HSM 手工撰写"} kind="warn" />
-            <OnErrorRow icon="shield" label="合规失败 → CLARIFICATION_RETRY" kind="info" />
-          </div>
-        </InspectField>
-        <InspectField label={t("wf_permissions")}>
-          <div className="flex flex-col gap-1.5 text-[12px]">
-            <PermRow label="KB · 读取职位分析" scope="read" />
-            <PermRow label="KB · 写入 JD 草稿" scope="write" />
-            <PermRow label="LLM · 调用生成" scope="write" />
-            <PermRow label="Channels · 无直接发布" scope="none" />
-          </div>
-        </InspectField>
-        <InspectField label={t("wf_sla") + " · " + t("wf_policies")}>
-          <div className="grid grid-cols-2 gap-2 text-[12px]">
-            <KV k={t("unit_ms") + " P95"} v="4800" />
-            <KV k={t("concurrency")} v="12" />
-            <KV k={t("rate_limit")} v="60/min" />
-            <KV k="预算" v="¥0.42 / 次" />
-          </div>
-        </InspectField>
-      </div>
-      <div className="border-t border-line flex gap-2 p-3">
-        <Btn variant="ghost" style={{ flex: 1 }}>{t("cancel")}</Btn>
-        <Btn variant="primary" style={{ flex: 1 }}>{t("save")}</Btn>
       </div>
     </>
-  );
-}
-
-function InspectField({ label, value, mono, children }: { label: string; value?: string; mono?: boolean; children?: React.ReactNode }) {
-  return (
-    <div className="border-b border-line" style={{ padding: "10px 16px" }}>
-      <div className="text-[10.5px] tracking-[0.06em] uppercase text-ink-4 font-semibold mb-1.5">{label}</div>
-      {value && <div className={mono ? "mono text-[11.5px]" : "text-[12.5px]"}>{value}</div>}
-      {children}
-    </div>
-  );
-}
-
-function OnErrorRow({ icon, label, kind }: { icon: IcName; label: string; kind: "ok" | "warn" | "info" }) {
-  const Icon = Ic[icon];
-  const bg = kind === "ok" ? "var(--c-ok-bg)" : kind === "warn" ? "var(--c-warn-bg)" : "var(--c-info-bg)";
-  const col = kind === "ok" ? "var(--c-ok)" : kind === "warn" ? "oklch(0.5 0.14 75)" : "var(--c-info)";
-  return (
-    <div
-      className="flex items-center gap-2 rounded-sm text-[12px]"
-      style={{
-        padding: "6px 8px",
-        background: bg,
-        border: `1px solid color-mix(in oklab, ${col} 30%, transparent)`,
-      }}
-    >
-      <span style={{ color: col }}><Icon /></span>
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function PermRow({ label, scope }: { label: string; scope: "read" | "write" | "none" }) {
-  const text = scope === "write" ? "写入" : scope === "read" ? "只读" : "无";
-  const variant = scope === "write" ? "warn" : scope === "read" ? "info" : "default";
-  return (
-    <div className="flex items-center gap-2">
-      <span className="flex-1">{label}</span>
-      <Badge variant={variant as any}>{text}</Badge>
-    </div>
-  );
-}
-
-function KV({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex flex-col bg-panel rounded-sm border border-line" style={{ padding: "6px 8px" }}>
-      <span className="hint">{k}</span>
-      <span className="mono text-[12px] font-medium">{v}</span>
-    </div>
   );
 }
 

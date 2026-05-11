@@ -30,6 +30,7 @@ export function RunSummaryModal({ runId, jobLabel, onClose }: Props) {
     try {
       const r = await fetchJson<RunSummaryResponse>(
         `/api/runs/${encodeURIComponent(runId)}/summary`,
+        { timeoutMs: 60_000 }, // LLM 6-15s; default 5s would always fail
       );
       setResp(r);
     } catch (e) {

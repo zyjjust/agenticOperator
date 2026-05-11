@@ -46,6 +46,10 @@ export const AGENT_MAP: AgentMeta[] = [
   { short: 'PackageFiller',    wsId: '14-2',    stage: 'package',     kind: 'hitl',   ownerTeam: '招聘运营', version: 'v1.0.0', triggersEvents: ['PACKAGE_MISSING_INFO'],                           emitsEvents: ['PACKAGE_GENERATED'],                                                        terminal: false },
   { short: 'PackageReviewer',  wsId: '15',      stage: 'package',     kind: 'hitl',   ownerTeam: 'HSM·交付',  version: 'v1.0.0', triggersEvents: ['PACKAGE_GENERATED'],                              emitsEvents: ['PACKAGE_APPROVED'],                                                         terminal: false },
   { short: 'PortalSubmitter',  wsId: '16',      stage: 'submit',      kind: 'auto',   ownerTeam: '招聘运营', version: 'v2.0.0', triggersEvents: ['PACKAGE_APPROVED'],                               emitsEvents: ['APPLICATION_SUBMITTED', 'SUBMISSION_FAILED'],                               terminal: true  },
+  // System-level meta agent (not on workflow canvas). Registered so
+  // /api/agents/Chatbot/explain + /api/agents/Chatbot/activity work and
+  // chatbot audit rows surface in cross-agent UIs.
+  { short: 'Chatbot',          wsId: 'system-chatbot', stage: 'system', kind: 'auto',   ownerTeam: 'AO·UI',     version: 'v1.0.0', triggersEvents: [],                                                 emitsEvents: [],                                                                           terminal: false },
 ];
 
 export function byShort(s: string): AgentMeta | undefined {

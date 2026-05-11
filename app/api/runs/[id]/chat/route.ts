@@ -48,15 +48,22 @@ type Source = {
 const MAX_TOOL_TURNS = 4;
 const MAX_RECENT_ROWS = 30;
 
-const SYSTEM_PROMPT = `You are an assistant for one workflow run inside Agentic Operator.
+const SYSTEM_PROMPT = `You are an assistant for ONE workflow run inside Agentic Operator.
 
-Hard constraints:
-- You can only answer questions about THIS run (its activities, steps, events, agent stats). If the user asks about another run, system, or unrelated topic, politely refuse and explain.
-- You MUST use the provided tools to fetch data. Never invent agent names, durations, or step counts.
-- Every fact you state must point to which tool you called and which row/field it came from. Cite inline like "(from getActivityLog: row#3 at 14:06:12)".
-- You are read-only. Never describe yourself as making changes. If the user asks you to retry / pause / mutate, refuse and tell them which UI button to click.
-- Be concise — most ops questions deserve 2-4 sentences plus structured data, not paragraphs.
-- Respond in the same language as the user's question (Chinese if they ask in Chinese, English otherwise).`;
+Hard constraints (do not violate):
+- Scope is locked to THIS run only. If asked about another run / system / unrelated topic, refuse and explain.
+- ALWAYS use the provided tools to fetch data. NEVER invent agent names, step counts, durations, event ids, or numbers.
+- Every fact must cite which tool produced it. Inline cites like "(from getActivityLog row#3 at 14:06:12)" or "(via getAgentStats)".
+- READ-ONLY. If asked to retry / pause / cancel / modify anything, refuse and direct the user to the appropriate UI button.
+
+Response style (the UI renders markdown — use it):
+- Lead with a 1-sentence direct answer. Don't restate the question.
+- Use **bold** for key facts (numbers, agent names, timestamps).
+- Use \`inline code\` for ids / events / status values.
+- Use bullet lists for 3+ items, plain prose for 1-2.
+- For tabular comparisons, use a markdown table.
+- Length: aim for ≤8 lines unless the question explicitly asks for detail.
+- Match the user's language (Chinese in, Chinese out; English in, English out).`;
 
 export async function POST(req: Request, ctx: RouteCtx): Promise<Response> {
   const { id: runId } = await ctx.params;
@@ -88,24 +95,79 @@ export async function POST(req: Request, ctx: RouteCtx): Promise<Response> {
     `${run.completedAt ? `COMPLETED: ${run.completedAt.toISOString()}\n` : ""}` +
     `Use the tools to fetch activity, agent stats, step details.`;
 
-  if (!isGatewayConfigured()) {
-    // Fallback mode — deterministic question router.
-    return NextResponse.json(await fallbackAnswer(runId, body.messages));
+  // Audit-log the user's question into the run's activity stream so
+  // chatbot use shows up in the 日志 Tab. Fire-and-forget — never block
+  // the chat response on this. Marked with metadata.chatbot=true so the
+  // UI can filter it out if it gets noisy.
+  const lastUser = [...body.messages].reverse().find((m) => m.role === "user");
+  if (lastUser) {
+    void prisma.agentActivity
+      .create({
+        data: {
+          runId,
+          nodeId: "chatbot",
+          agentName: "Chatbot",
+          type: "info",
+          narrative: `🗨️ 用户问: ${lastUser.content.slice(0, 200)}${lastUser.content.length > 200 ? "…" : ""}`,
+          metadata: JSON.stringify({ chatbot: true, role: "user" }),
+        },
+      })
+      .catch(() => {/* never break chat on audit failure */});
   }
 
+  // Stream branch: SSE-style ReadableStream when ?stream=1 is set.
+  // Tool-call rounds remain blocking (we need full tool results before
+  // the next LLM call); only the FINAL text answer streams.
+  const streamMode = new URL(req.url).searchParams.get("stream") === "1";
+  if (streamMode && isGatewayConfigured()) {
+    return streamingResponse(runId, preamble, body.messages);
+  }
+
+  type ChatResult = {
+    reply: ChatMessage;
+    sources: Source[];
+    modelUsed?: string;
+    toolCallsExecuted?: number;
+  };
+  let result: ChatResult;
   try {
-    return NextResponse.json(await runToolLoop(runId, preamble, body.messages));
+    if (!isGatewayConfigured()) {
+      result = await fallbackAnswer(runId, body.messages);
+    } else {
+      result = await runToolLoop(runId, preamble, body.messages);
+    }
   } catch (e) {
     return NextResponse.json(
       {
         error: "LLM_FAILED",
         message: (e as Error).message,
-        // Best-effort fallback so the UI still shows something.
         ...(await fallbackAnswer(runId, body.messages)),
       },
       { status: 502 },
     );
   }
+
+  // Audit-log the assistant reply too.
+  void prisma.agentActivity
+    .create({
+      data: {
+        runId,
+        nodeId: "chatbot",
+        agentName: "Chatbot",
+        type: "info",
+        narrative: `🤖 AI 答: ${result.reply.content.slice(0, 200)}${result.reply.content.length > 200 ? "…" : ""}`,
+        metadata: JSON.stringify({
+          chatbot: true,
+          role: "assistant",
+          modelUsed: result.modelUsed,
+          toolCallsExecuted: result.toolCallsExecuted ?? 0,
+          sourcesCount: result.sources?.length ?? 0,
+        }),
+      },
+    })
+    .catch(() => {/* never break chat on audit failure */});
+
+  return NextResponse.json(result);
 }
 
 // ── Tool definitions exposed to the LLM ──────────────────────────────
@@ -457,4 +519,171 @@ function parseJson(s: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+// ── Streaming variant ────────────────────────────────────────────────
+//
+// Same tool-loop logic as runToolLoop, but emits SSE events as it goes.
+// Tool-call rounds are still blocking (LLM needs the result before next
+// turn), but the final text answer streams as it generates — typical
+// LLM completions take 5-15s, and the user staring at "loading…" for
+// that long feels broken even when it's working.
+//
+// SSE event shapes (one per `data: {...}\n\n`):
+//   { type: "tool_call", tool, args }
+//   { type: "tool_result", tool, label }
+//   { type: "text", delta }
+//   { type: "done", sources, modelUsed, toolCallsExecuted }
+//   { type: "error", message }
+
+function streamingResponse(
+  runId: string,
+  preamble: string,
+  messages: ChatMessage[],
+): Response {
+  const encoder = new TextEncoder();
+  const send = (writer: WritableStreamDefaultWriter, ev: unknown): Promise<void> => {
+    return writer.write(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+  };
+
+  const stream = new TransformStream();
+  const writer = stream.writable.getWriter();
+
+  // Run the loop async, push events into the stream. Don't await — let
+  // the response start flowing immediately.
+  void (async () => {
+    const sources: Source[] = [];
+    let toolCallsExecuted = 0;
+    let modelUsed: string | undefined;
+    let accumulatedText = "";
+
+    try {
+      const cfg = pickGateway();
+      modelUsed = cfg.model;
+      const client = new OpenAI({ baseURL: cfg.baseURL, apiKey: cfg.apiKey });
+      const convo: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: SYSTEM_PROMPT + "\n\nRun context:\n" + preamble },
+        ...messages.map((m) => ({ role: m.role, content: m.content }) as OpenAI.ChatCompletionMessageParam),
+      ];
+
+      // Tool-call rounds (blocking — same loop as runToolLoop).
+      let needFinalStreamCompletion = true;
+      for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+        const completion = await client.chat.completions.create({
+          model: cfg.model,
+          messages: convo,
+          tools: TOOL_SCHEMAS,
+          tool_choice: "auto",
+          temperature: 0.2,
+          max_tokens: 700,
+        });
+        const choice = completion.choices[0];
+        if (!choice) break;
+        const msg = choice.message;
+        convo.push(msg as OpenAI.ChatCompletionMessageParam);
+
+        const toolCalls = msg.tool_calls ?? [];
+        if (toolCalls.length === 0) {
+          // Done with tools. The non-streaming response already has the
+          // full answer — emit it as one chunk and skip the streaming
+          // completion call below.
+          if (msg.content) {
+            accumulatedText = msg.content;
+            await send(writer, { type: "text", delta: msg.content });
+          }
+          needFinalStreamCompletion = false;
+          break;
+        }
+
+        // Execute each tool call sequentially.
+        for (const tc of toolCalls) {
+          if (tc.type !== "function") continue;
+          const name = tc.function.name as ToolName;
+          let args: Record<string, unknown> = {};
+          try {
+            args = tc.function.arguments
+              ? (JSON.parse(tc.function.arguments) as Record<string, unknown>)
+              : {};
+          } catch {/* malformed */}
+          await send(writer, { type: "tool_call", tool: name, args });
+          const { result, sources: s } = await execTool(runId, name, args);
+          sources.push(...s);
+          toolCallsExecuted++;
+          await send(writer, {
+            type: "tool_result",
+            tool: name,
+            label: s[0]?.label ?? "ok",
+          });
+          convo.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify(result).slice(0, 12_000),
+          });
+        }
+      }
+
+      // Final streaming completion call (no tools — just synthesize).
+      if (needFinalStreamCompletion) {
+        const finalStream = await client.chat.completions.create({
+          model: cfg.model,
+          messages: convo,
+          temperature: 0.2,
+          max_tokens: 700,
+          stream: true,
+        });
+        for await (const chunk of finalStream) {
+          const delta = chunk.choices[0]?.delta?.content ?? "";
+          if (delta) {
+            accumulatedText += delta;
+            await send(writer, { type: "text", delta });
+          }
+        }
+      }
+
+      await send(writer, {
+        type: "done",
+        sources,
+        modelUsed,
+        toolCallsExecuted,
+      });
+    } catch (e) {
+      await send(writer, { type: "error", message: (e as Error).message });
+    } finally {
+      // Audit-log the assistant reply in the streaming case too.
+      if (accumulatedText) {
+        void prisma.agentActivity
+          .create({
+            data: {
+              runId,
+              nodeId: "chatbot",
+              agentName: "Chatbot",
+              type: "info",
+              narrative: `🤖 AI 答 (流式): ${accumulatedText.slice(0, 200)}${accumulatedText.length > 200 ? "…" : ""}`,
+              metadata: JSON.stringify({
+                chatbot: true,
+                role: "assistant",
+                modelUsed,
+                toolCallsExecuted,
+                sourcesCount: sources.length,
+                streamed: true,
+              }),
+            },
+          })
+          .catch(() => {/* ignore */});
+      }
+      try {
+        await writer.close();
+      } catch {/* already closed */}
+    }
+  })();
+
+  return new Response(stream.readable, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      // Disable Vercel buffering / Next.js compression for SSE.
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

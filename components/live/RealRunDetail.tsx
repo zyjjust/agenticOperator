@@ -13,6 +13,7 @@ import { byShortFunction } from "@/lib/agent-functions";
 import { RunTraceTimeline } from "./RunTraceTimeline";
 import { RunQuickActions } from "./RunQuickActions";
 import { RunChatbot } from "./RunChatbot";
+import { Markdown } from "@/components/shared/Markdown";
 
 // Real-run detail rendered into the center+right of /live when the user
 // clicks a real WorkflowRun row in the left list. Two named exports —
@@ -345,8 +346,13 @@ function FlowTab({
     const tick = async () => {
       try {
         const [t, a] = await Promise.all([
-          fetchJson<TraceResponse>(`/api/runs/${encodeURIComponent(runId)}/trace`),
-          fetchJson<ActivityResponse>(`/api/runs/${encodeURIComponent(runId)}/activity?limit=500`),
+          fetchJson<TraceResponse>(
+            `/api/runs/${encodeURIComponent(runId)}/trace`,
+            { timeoutMs: 15_000 }, // trace fans out to Inngest per event
+          ),
+          fetchJson<ActivityResponse>(
+            `/api/runs/${encodeURIComponent(runId)}/activity?limit=500`,
+          ),
         ]);
         if (cancelled) return;
         setTrace(t);
@@ -540,52 +546,98 @@ function AiSummarySection({ runId }: { runId: string }) {
   const [resp, setResp] = React.useState<RunSummaryResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
+  // Track ms elapsed during regeneration so the progress text is concrete
+  // ("生成中… 4.2s") instead of a static spinner. LLM calls regularly
+  // take 5-15s; users want to know "is it working" not "did it hang".
+  const [elapsedMs, setElapsedMs] = React.useState(0);
+  const elapsedTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchSummary = React.useCallback(async () => {
+  const fetchSummary = React.useCallback(async (opts?: { bustCache?: boolean }) => {
     setLoading(true);
     setErr(null);
+    setElapsedMs(0);
+    const startedAt = Date.now();
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    elapsedTimerRef.current = setInterval(
+      () => setElapsedMs(Date.now() - startedAt),
+      200,
+    );
     try {
+      if (opts?.bustCache) {
+        await fetch(`/api/runs/${encodeURIComponent(runId)}/summary`, { method: "DELETE" });
+      }
       const r = await fetchJson<RunSummaryResponse>(
         `/api/runs/${encodeURIComponent(runId)}/summary`,
+        { timeoutMs: 60_000 }, // LLM 6-15s; default 5s would always fail
       );
       setResp(r);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = null;
+      }
       setLoading(false);
     }
   }, [runId]);
 
   React.useEffect(() => {
     void fetchSummary();
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    };
   }, [fetchSummary]);
+
+  // Reset state when switching runs.
+  React.useEffect(() => {
+    setResp(null);
+    setErr(null);
+  }, [runId]);
 
   return (
     <div className="overflow-auto" style={{ padding: "16px 22px" }}>
       <div className="flex items-center mb-2 gap-2">
-        {resp && (
+        {resp && !loading && (
           <Badge variant={resp.source === "llm" ? "ok" : "info"}>
             {resp.source === "llm" ? `via ${resp.modelUsed ?? "llm"}` : "fallback (无网关)"}
           </Badge>
         )}
+        {loading && (
+          <Badge variant="info" dot pulse>
+            生成中 · {(elapsedMs / 1000).toFixed(1)}s
+          </Badge>
+        )}
+        {resp && resp.durationLLMms != null && !loading && (
+          <span className="mono text-[10px] text-ink-4">
+            上次 {(resp.durationLLMms / 1000).toFixed(1)}s
+          </span>
+        )}
         <div className="flex-1" />
-        <Btn size="sm" onClick={fetchSummary} disabled={loading}>
+        <Btn size="sm" onClick={() => void fetchSummary()} disabled={loading}>
           <Ic.sparkle /> {loading ? "生成中…" : "重新生成"}
         </Btn>
         <Btn
           size="sm"
           variant="ghost"
-          onClick={async () => {
-            await fetch(`/api/runs/${encodeURIComponent(runId)}/summary`, {
-              method: "DELETE",
-            });
-            await fetchSummary();
-          }}
+          onClick={() => void fetchSummary({ bustCache: true })}
           disabled={loading}
+          title="清服务端缓存后重新调 LLM"
         >
           <Ic.bolt /> 清缓存
         </Btn>
       </div>
+      {/* During regeneration, keep the previous summary visible (faded)
+          rather than blanking the panel — gives the user a sense of
+          continuity and they can read the old one while the new one cooks. */}
+      {loading && resp && (
+        <div
+          className="border border-line border-dashed rounded-sm mb-2 mono text-[10.5px] text-ink-3"
+          style={{ padding: "5px 10px" }}
+        >
+          ⏳ AI 重新生成中（基于最新 activity）。下方显示的是上一次结果，会被覆盖。
+        </div>
+      )}
       {err && (
         <div className="text-[11.5px]" style={{ color: "var(--c-warn)" }}>
           ⚠ {err}
@@ -606,11 +658,35 @@ function AiSummarySection({ runId }: { runId: string }) {
               value={resp.durationMs ? formatDuration(resp.durationMs) : "—"}
             />
           </div>
+          {/* Honesty banner — when activityCount=0 the AI summary endpoint
+              now refuses to call LLM (would hallucinate). UI tells the
+              user why and points at the fix. */}
+          {resp.activityCount === 0 && resp.agentBreakdown.length === 0 && (
+            <div
+              className="border rounded-sm mb-2 text-[11.5px]"
+              style={{
+                padding: "8px 10px",
+                background: "color-mix(in oklab, var(--c-info) 7%, transparent)",
+                borderColor: "color-mix(in oklab, var(--c-info) 30%, var(--c-line))",
+                color: "var(--c-ink-2)",
+              }}
+            >
+              <div className="font-semibold mb-1" style={{ color: "var(--c-info)" }}>
+                ⚠ 数据稀疏 · 跳过 LLM 调用
+              </div>
+              <div className="leading-relaxed">
+                这条 run 在 AgentActivity / WorkflowStep 表里没有任何记录。
+                之前 LLM 在零数据下会编造 agent 名（如 <code className="mono">JD_Writer</code>、
+                <code className="mono">Recruiter_Agent</code> 等不在 AGENT_MAP 的虚构名）。
+                现在直接返回诚实的"无数据"通知，详见下方。
+              </div>
+            </div>
+          )}
           <div
-            className="mono text-[11.5px] text-ink-2 bg-panel border border-line rounded-sm overflow-auto whitespace-pre-wrap"
-            style={{ padding: 12, lineHeight: 1.55 }}
+            className="bg-panel border border-line rounded-sm overflow-auto transition-opacity"
+            style={{ padding: "10px 14px", opacity: loading ? 0.5 : 1 }}
           >
-            {resp.text}
+            <Markdown>{resp.text}</Markdown>
           </div>
         </>
       )}
@@ -656,7 +732,10 @@ export function RealRunRight({
   const [resp, setResp] = React.useState<RunSummaryResponse | null>(null);
 
   React.useEffect(() => {
-    fetchJson<RunSummaryResponse>(`/api/runs/${encodeURIComponent(runId)}/summary`)
+    fetchJson<RunSummaryResponse>(
+      `/api/runs/${encodeURIComponent(runId)}/summary`,
+      { timeoutMs: 60_000 }, // LLM 6-15s; default 5s would always fail
+    )
       .then(setResp)
       .catch(() => {/* keep null */});
   }, [runId]);
