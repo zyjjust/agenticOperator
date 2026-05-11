@@ -26,10 +26,14 @@ import {
   type RaasMatchResumeData,
   type RequirementsAgentViewItem,
 } from '../../raas-api-client';
+import { buildRuleCheckInput, runRuleCheck } from '../../rule-check';
 import {
   inngest,
   type MatchPassedNeedInterviewData,
   type ResumeProcessedData,
+  type RuleCheckAuditMeta,
+  type RuleCheckFailedData,
+  type RuleCheckPassedData,
 } from '../client';
 
 const AGENT_ID = 'match-resume-agent';
@@ -195,6 +199,113 @@ export const matchResumeAgent = inngest.createFunction(
       }
 
       const stepKey = sanitizeStepKey(jrid);
+
+      // ── 4.0 NEW: rule-check LLM 预筛 (PASS/FAIL gate) ───────────────
+      //
+      // 跑一次 LLM 评判,决定本条 JD 是否值得推进到 RAAS /match-resume:
+      //   - LLM overall_decision="KEEP"   → PASS,继续 4a
+      //   - LLM overall_decision="DROP"   → FAIL,emit RULE_CHECK_FAILED 并跳过
+      //   - LLM overall_decision="PAUSE"  → FAIL,emit RULE_CHECK_FAILED 并跳过
+      //   - LLM 调用 / 解析失败            → FAIL-safe(不偷溜进 matchResume)
+      // (rule-check 实现见 resume-parser-agent/lib/rule-check/)
+      const ruleCheck = await step.run(`rule-check-${stepKey}`, async () => {
+        const dataResumeId = typeof data.resume_id === 'string' ? data.resume_id : '';
+        const dataFilename = typeof data.filename === 'string' ? data.filename : undefined;
+        const dataReceivedAt = typeof data.receivedAt === 'string' ? data.receivedAt : undefined;
+        const parsedData =
+          data.parsed && typeof data.parsed === 'object'
+            ? ((data.parsed as Record<string, unknown>).data as
+                | Record<string, unknown>
+                | undefined)
+            : undefined;
+
+        const ruleCheckInput = buildRuleCheckInput({
+          runtime_context: {
+            upload_id: uploadId ?? '',
+            candidate_id: candidateId ?? '',
+            resume_id: dataResumeId,
+            employee_id: employeeId,
+            filename: dataFilename,
+            received_at: dataReceivedAt,
+            trace_id: traceId ?? null,
+          },
+          parsed_resume: parsedData ?? null,
+          job_requisition: req as unknown as Record<string, unknown>,
+        });
+        const verdict = await runRuleCheck(ruleCheckInput);
+        logger.info(
+          `[${AGENT_NAME}] rule-check · job_req=${jrid} decision=${verdict.decision} ` +
+            `llm_decision=${verdict.llm_decision} hit_flags=${verdict.hit_flags.length} ` +
+            `rules_evaluated=${verdict.audit.rules_evaluated}/${verdict.audit.rules_total_in_ontology} ` +
+            `model=${verdict.audit.llm_model} latency_ms=${verdict.audit.llm_duration_ms}`,
+        );
+        return verdict;
+      });
+
+      const ruleCheckAuditMeta: RuleCheckAuditMeta = {
+        rules_evaluated: ruleCheck.audit.rules_evaluated,
+        rules_total_in_ontology: ruleCheck.audit.rules_total_in_ontology,
+        client_id: ruleCheck.audit.dims.client_id,
+        business_group: ruleCheck.audit.dims.business_group,
+        studio: ruleCheck.audit.dims.studio,
+        llm_decision: ruleCheck.llm_decision,
+        llm_model: ruleCheck.audit.llm_model,
+        llm_duration_ms: ruleCheck.audit.llm_duration_ms,
+        llm_prompt_tokens: ruleCheck.audit.llm_prompt_tokens,
+        llm_completion_tokens: ruleCheck.audit.llm_completion_tokens,
+        parse_error: ruleCheck.audit.parse_error,
+      };
+
+      const resumeIdForEvents = typeof data.resume_id === 'string' ? data.resume_id : undefined;
+
+      if (ruleCheck.decision === 'FAIL') {
+        const failedPayload: RuleCheckFailedData = {
+          upload_id: uploadId ?? '',
+          candidate_id: candidateId ?? undefined,
+          resume_id: resumeIdForEvents,
+          job_requisition_id: jrid,
+          client_id: pickClientId(req),
+          failure_reasons: ruleCheck.failure_reasons,
+          hit_rules: ruleCheck.hit_flags.map((f) => ({
+            rule_id: f.rule_id,
+            rule_name: f.rule_name,
+            severity: f.severity,
+            result: f.result,
+            evidence: f.evidence,
+          })),
+          audit: ruleCheckAuditMeta,
+        };
+        await step.sendEvent(`emit-rule-check-failed-${stepKey}`, {
+          name: 'RULE_CHECK_FAILED',
+          data: failedPayload,
+        });
+        logger.info(
+          `[${AGENT_NAME}] ⛔ RULE_CHECK_FAILED · job_req=${jrid} ` +
+            `reasons=${ruleCheck.failure_reasons.join(',') || '(none)'} — skip matchResume`,
+        );
+        summaries.push({
+          job_requisition_id: jrid,
+          ok: false,
+          error: `rule-check-failed: ${ruleCheck.failure_reasons.join(',') || ruleCheck.llm_decision}`,
+        });
+        continue;
+      }
+
+      const passedPayload: RuleCheckPassedData = {
+        upload_id: uploadId ?? '',
+        candidate_id: candidateId ?? undefined,
+        resume_id: resumeIdForEvents,
+        job_requisition_id: jrid,
+        client_id: pickClientId(req),
+        audit: ruleCheckAuditMeta,
+      };
+      await step.sendEvent(`emit-rule-check-passed-${stepKey}`, {
+        name: 'RULE_CHECK_PASSED',
+        data: passedPayload,
+      });
+      logger.info(
+        `[${AGENT_NAME}] ✓ RULE_CHECK_PASSED · job_req=${jrid} — proceed to matchResume`,
+      );
 
       // 4a. 调 RAAS /api/v1/match-resume (透传 RoboHire)
       const matchResult = await step.run(

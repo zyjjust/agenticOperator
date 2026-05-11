@@ -125,6 +125,50 @@ export type MatchPassedNeedInterviewData = {
   error?: string;
 };
 
+// ─── §3.5 Rule check 事件(matchResumeAgent 在调 RAAS /match-resume 之前
+// 跑一次 LLM 预筛,决定是否推进。binary PASS/FAIL,见 lib/rule-check/) ───
+export type RuleCheckAuditMeta = {
+  rules_evaluated: number;
+  rules_total_in_ontology: number;
+  client_id: string;
+  business_group: string | null;
+  studio: string | null;
+  llm_decision: 'KEEP' | 'DROP' | 'PAUSE' | 'UNKNOWN';
+  llm_model: string;
+  llm_duration_ms: number;
+  llm_prompt_tokens?: number;
+  llm_completion_tokens?: number;
+  parse_error?: string;
+};
+
+export type RuleCheckPassedData = {
+  upload_id: string;
+  candidate_id?: string;
+  resume_id?: string;
+  job_requisition_id: string;
+  client_id?: string;
+  audit: RuleCheckAuditMeta;
+};
+
+export type RuleCheckFailedData = {
+  upload_id: string;
+  candidate_id?: string;
+  resume_id?: string;
+  job_requisition_id: string;
+  client_id?: string;
+  /** rule_id:short_code 形式;来自 LLM drop_reasons + pause_reasons。 */
+  failure_reasons: string[];
+  /** 命中(applicable && result∈{FAIL,REVIEW})的规则简表。 */
+  hit_rules: Array<{
+    rule_id: string;
+    rule_name: string;
+    severity: 'terminal' | 'needs_human' | 'flag_only';
+    result: 'PASS' | 'FAIL' | 'REVIEW' | 'NOT_APPLICABLE';
+    evidence?: string;
+  }>;
+  audit: RuleCheckAuditMeta;
+};
+
 // ─── §3.4 JD 生成相关事件 ─────────────────────────────────
 //
 // REQUIREMENT_LOGGED (RAAS → AO)：raw_input_data 28 字段平铺在 payload 里。
@@ -244,6 +288,9 @@ type Events = {
   MATCH_PASSED_NEED_INTERVIEW: { data: MatchPassedNeedInterviewData };
   MATCH_PASSED_NO_INTERVIEW: { data: MatchPassedNeedInterviewData };
   MATCH_FAILED: { data: MatchPassedNeedInterviewData };
+  // ── Rule check (LLM 预筛,gate matchResume) ──
+  RULE_CHECK_PASSED: { data: RuleCheckPassedData };
+  RULE_CHECK_FAILED: { data: RuleCheckFailedData };
   // ── JD 生成链 ──
   REQUIREMENT_LOGGED: { data: RequirementLoggedData };
   CLARIFICATION_READY: { data: RequirementLoggedData };  // 同 shape，下游也是 createJdAgent
