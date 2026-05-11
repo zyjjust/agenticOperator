@@ -95,6 +95,11 @@ export type ResumeProcessedData = {
   // matcher 不必再反查就能用 candidate_id 调 saveMatchResults。
   candidate_id?: string;
   resume_id?: string;
+  // 上传时关联的岗位（来自 RESUME_DOWNLOADED.payload.job_requisition_id）。
+  // 有值 → matchResumeAgent 只匹配该一个岗位；为空 → fallback 到 agent-view
+  // 拉取上传者名下所有 recruiting 需求做匹配。raas 前端"上传简历"弹框里
+  // 的"关联岗位（可选）"下拉决定了这个字段是否有值。
+  job_requisition_id?: string | null;
 };
 
 // ─── §3.3 匹配输出事件 ─────────────────────────────────────

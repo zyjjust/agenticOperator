@@ -18,6 +18,7 @@
 import { NonRetriableError } from 'inngest';
 import {
   RaasApiError,
+  getRequirementDetail,
   getRequirementsAgentView,
   isRaasApiConfigured,
   matchResume,
@@ -86,13 +87,57 @@ export const matchResumeAgent = inngest.createFunction(
 
     // ── 3. 调 RAAS API 拿招聘人员的在招需求列表 ──────────────
     //
-    // 接口签名 (per partner 2026-05-08):
-    //   GET /api/v1/requirements/agent-view?claimer_employee_id=EMP001
-    //
-    // 只传 claimer_employee_id, 其他过滤逻辑 (scope/status/page_size)
-    // 由 partner 端按 agent-view 语义内部决定 (典型: 只返回 claimer 名下
-    // 在招的需求, 默认分页). 我们不再传额外参数.
+    // 双路径:
+    //   A) RESUME_PROCESSED.payload.job_requisition_id 有值
+    //        → 上传时用户在 raas 前端弹框选了"关联岗位"
+    //        → 调 GET /api/v1/requirements/:id 单岗位精准匹配
+    //   B) job_requisition_id 为空
+    //        → 调 GET /api/v1/requirements/agent-view?claimer_employee_id=...
+    //        → 拉 claimer 名下所有 recruiting JD 全扫描 (现状)
+    const linkedJrId =
+      typeof data.job_requisition_id === 'string' &&
+      data.job_requisition_id.trim().length > 0
+        ? data.job_requisition_id.trim()
+        : null;
+
     const requirements = await step.run('list-requirements', async () => {
+      // 路径 A: 单岗位精准匹配
+      if (linkedJrId) {
+        try {
+          const detail = await getRequirementDetail(linkedJrId, { traceId });
+          // 把 RaasRequirement 当成 RequirementsAgentViewItem 用 —
+          // flattenRequirementForMatch / pickRequisitionId / hasMatchableContent
+          // 都走的是宽松属性取值，字段名（job_requisition_id /
+          // job_responsibility / must_have_skills / ...）在两个类型间一致。
+          const merged = {
+            ...(detail.specification ?? {}),
+            ...(detail.requirement ?? {}),
+          } as unknown as RequirementsAgentViewItem;
+          // 单岗位路径不再做 isRecruitingStatus 兜底过滤 — 用户明确选了这个
+          // 岗位关联，即使该岗位状态变更（暂停/关闭），匹配结果对人工后续
+          // 判断仍有价值。但仍要求至少有可匹配内容，否则无意义。
+          if (!hasMatchableContent(merged)) {
+            logger.warn(
+              `[${AGENT_NAME}] linked job_requisition_id=${linkedJrId} 内容空 ` +
+                `(无 responsibility / requirement / must_have_skills)，跳过匹配`,
+            );
+            return [];
+          }
+          logger.info(
+            `[${AGENT_NAME}] linked job_requisition_id=${linkedJrId} → 单岗位精准匹配`,
+          );
+          return [merged];
+        } catch (e) {
+          if (e instanceof RaasApiError && e.isClientError) {
+            throw new NonRetriableError(
+              `RAAS getRequirementDetail 4xx for linked jr=${linkedJrId}: ${e.code} ${e.message}`,
+            );
+          }
+          throw e;
+        }
+      }
+
+      // 路径 B: 未关联岗位 → agent-view 扫描所有 claimer 名下 recruiting JD (现状)
       try {
         const r = await getRequirementsAgentView(
           { claimer_employee_id: employeeId },

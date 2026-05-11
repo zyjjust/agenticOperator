@@ -215,6 +215,9 @@ export const resumeParserAgent = inngest.createFunction(
       // 持久化的产物 — 让下游知道 candidate_id 已经存在
       candidate_id: saveResult.candidate_id,
       resume_id: saveResult.resume_id,
+      // 透传上传时关联的岗位 — matchResumeAgent 据此决定"单岗位精准匹配"
+      // 还是"上传者名下全部 recruiting 岗位扫描"。
+      job_requisition_id: job_requisition_id ?? null,
       // 老的 4 对象嵌套字段保留为空 (RAAS 不再要求 agent 转结构)
       candidate: {} as ResumeProcessedData['candidate'],
       candidate_expectation: {} as ResumeProcessedData['candidate_expectation'],
