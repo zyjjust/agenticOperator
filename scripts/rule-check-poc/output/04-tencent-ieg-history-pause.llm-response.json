@@ -1,0 +1,347 @@
+{
+  "model_used": "google/gemini-3-flash-preview",
+  "duration_ms": 19005,
+  "prompt_tokens": 10227,
+  "completion_tokens": 3731,
+  "expected_decision": "PAUSE",
+  "expected_reason": "游戏后端候选人有腾讯 IEG 天美历史经历,腾讯 10-38 触发历史从业核实",
+  "parsed_json": {
+    "candidate_id": "c04-zhaoliu-tencent-ieg",
+    "job_requisition_id": "jr_z77",
+    "client_id": "CLI_TENCENT",
+    "overall_decision": "DROP",
+    "drop_reasons": [
+      "10-38:TENCENT_HISTORY_VERIFY",
+      "10-43:IEG_STUDIO_MUTEX"
+    ],
+    "pause_reasons": [
+      "10-40:IEG_QUICK_RETURN_REVIEW",
+      "10-46:TENCENT_RETURN_CERT_NEEDED",
+      "10-47:TENCENT_MARRIAGE_RISK"
+    ],
+    "rule_flags": [
+      {
+        "rule_id": "10-5",
+        "rule_name": "简历匹配硬性要求一票否决",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "学历:硕士(要求本科); 技能:C++, Lua(匹配); 年龄:36岁(1990-04-15, 略超35岁但通常按年份计, 处于边缘); 城市:深圳(匹配)",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-6",
+        "rule_name": "推荐前置简历匹配与硬性要求规则",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "命中加分项: UnrealEngine, Redis",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-7",
+        "rule_name": "候选人期望薪资校验",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "期望薪资 45k-58k, 岗位上限 60k, 未超限",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-8",
+        "rule_name": "候选人意愿度校验",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "outsourcing_acceptance: 接受",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-9",
+        "rule_name": "简历履历空窗期检测与标记",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "2019-08至今经历连续, 无超过3个月空窗",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-10",
+        "rule_name": "简历履历空窗期与职业稳定性风险判定",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "平均每段工作时长: 腾讯段(5.5年), 现单位(1.1年), 稳定性良好",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-12",
+        "rule_name": "学历年龄逻辑校验与风险预警",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "1990年出生, 2019年硕士毕业, 毕业年龄29岁。硕士常规24-26岁, 偏差3岁, 触发预警。",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-14",
+        "rule_name": "语言能力硬性门槛判断",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位需求未明确语言证书要求",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-15",
+        "rule_name": "特殊工时与出差意愿匹配",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位未带特殊工时标签",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-16",
+        "rule_name": "通用黑名单检验规则-被动释放人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无华腾或中软经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-17",
+        "rule_name": "通用黑名单检验规则-高风险回流人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无华腾或中软经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-18",
+        "rule_name": "通用黑名单检验规则-EHS风险回流人员",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无华腾或中软经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-24",
+        "rule_name": "简历与客户原始需求的关联",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历与 jr_z77 匹配度高(腾讯IEG天美背景)",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-25",
+        "rule_name": "华为荣耀竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无华为荣耀经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-26",
+        "rule_name": "OPPO小米竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无OPPO小米经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-29",
+        "rule_name": "通用二次入职推荐提醒规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "非本公司(CSI)前员工",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-54",
+        "rule_name": "对标公司/行业画像库匹配与定向猎挖规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位无负向要求",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-27",
+        "rule_name": "腾讯亲属关系回避规则",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "conflict_of_interest 为空",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-28",
+        "rule_name": "腾讯亲属关系回避处理规则",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "hsm_feedback 为空",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-35",
+        "rule_name": "腾讯外籍候选人实名与通道限制规范",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "国籍: 中国",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-38",
+        "rule_name": "腾讯历史从业经历识别与核实触发",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "FAIL",
+        "evidence": "简历包含腾讯 IEG 天美经历 (2019-08 至 2025-02), 触发核实挂起",
+        "next_action": "block"
+      },
+      {
+        "rule_id": "10-39",
+        "rule_name": "腾讯历史从业经历核实结果处理",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "hsm_feedback 为空",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-45",
+        "rule_name": "腾讯正编转外包回流标记",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "former_tencent_employment.employment_type: 正式",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-46",
+        "rule_name": "腾讯正编转外包回流凭证校验",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "正编转外包受控, 需上传同意回流书面凭证",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-47",
+        "rule_name": "腾讯婚育风险审视与推荐要点",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "性别: 男",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-40",
+        "rule_name": "腾讯主动离职人员紧急回流审核",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "腾讯主动离职(2025-02), 距今(2026-05)已满6个月, 但规则逻辑需确认具体BG。此处离职已超1年, 理论通过, 但因10-38挂起。",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-3",
+        "rule_name": "IEG活跃流程候选人改推拦截",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "当前无其他活跃流程记录",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-43",
+        "rule_name": "IEG工作室回流候选人互斥标记",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "FAIL",
+        "evidence": "原工作室: 天美; 目标工作室: 天美。虽不属于跨室禁止, 但因10-38腾讯经历核实中, 暂标FAIL。",
+        "next_action": "block"
+      },
+      {
+        "rule_id": "10-52",
+        "rule_name": "IEG内部技术面试强制校验",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "已标记内部技术面试锁定",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-56",
+        "rule_name": "腾娱互动子公司回流冷冻期拦截",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无腾娱互动经历",
+        "next_action": "continue"
+      }
+    ],
+    "resume_augmentation": "### 简历预筛分析\n- **核心优势**: 腾讯IEG天美工作室《王者荣耀》资深背景，完美契合岗位需求。硕士学历，精通C++、Lua、Redis、UE。\n- **风险提示**:\n    - **腾讯回流**: 候选人为腾讯前正编员工，触发“正编转外包”受控流程，需HSM获取采购部回流凭证。\n    - **经历核实**: 需核实2025年2月从天美离职的真实原因。\n    - **年龄逻辑**: 硕士29岁毕业，存在3年偏差，建议核实是否有复读或工作后再考研情况。",
+    "notifications": [
+      {
+        "recipient": "HSM",
+        "channel": "Email",
+        "rule_id": "10-38",
+        "message": "候选人赵六有腾讯历史经历，请核实离场原因。"
+      },
+      {
+        "recipient": "HSM",
+        "channel": "InApp",
+        "rule_id": "10-46",
+        "message": "候选人赵六为腾讯正编转外包，请上传回流凭证。"
+      },
+      {
+        "recipient": "招聘专员",
+        "channel": "InApp",
+        "rule_id": "10-12",
+        "message": "候选人赵六毕业年龄异常(29岁)，请核实教育周期。"
+      }
+    ]
+  },
+  "raw_text": "{\n  \"candidate_id\": \"c04-zhaoliu-tencent-ieg\",\n  \"job_requisition_id\": \"jr_z77\",\n  \"client_id\": \"CLI_TENCENT\",\n  \"overall_decision\": \"DROP\",\n  \"drop_reasons\": [\n    \"10-38:TENCENT_HISTORY_VERIFY\",\n    \"10-43:IEG_STUDIO_MUTEX\"\n  ],\n  \"pause_reasons\": [\n    \"10-40:IEG_QUICK_RETURN_REVIEW\",\n    \"10-46:TENCENT_RETURN_CERT_NEEDED\",\n    \"10-47:TENCENT_MARRIAGE_RISK\"\n  ],\n  \"rule_flags\": [\n    {\n      \"rule_id\": \"10-5\",\n      \"rule_name\": \"简历匹配硬性要求一票否决\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"学历:硕士(要求本科); 技能:C++, Lua(匹配); 年龄:36岁(1990-04-15, 略超35岁但通常按年份计, 处于边缘); 城市:深圳(匹配)\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-6\",\n      \"rule_name\": \"推荐前置简历匹配与硬性要求规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"命中加分项: UnrealEngine, Redis\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-7\",\n      \"rule_name\": \"候选人期望薪资校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"期望薪资 45k-58k, 岗位上限 60k, 未超限\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-8\",\n      \"rule_name\": \"候选人意愿度校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"outsourcing_acceptance: 接受\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-9\",\n      \"rule_name\": \"简历履历空窗期检测与标记\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"2019-08至今经历连续, 无超过3个月空窗\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-10\",\n      \"rule_name\": \"简历履历空窗期与职业稳定性风险判定\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"平均每段工作时长: 腾讯段(5.5年), 现单位(1.1年), 稳定性良好\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-12\",\n      \"rule_name\": \"学历年龄逻辑校验与风险预警\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"1990年出生, 2019年硕士毕业, 毕业年龄29岁。硕士常规24-26岁, 偏差3岁, 触发预警。\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-14\",\n      \"rule_name\": \"语言能力硬性门槛判断\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位需求未明确语言证书要求\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-15\",\n      \"rule_name\": \"特殊工时与出差意愿匹配\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位未带特殊工时标签\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-16\",\n      \"rule_name\": \"通用黑名单检验规则-被动释放人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无华腾或中软经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-17\",\n      \"rule_name\": \"通用黑名单检验规则-高风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无华腾或中软经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-18\",\n      \"rule_name\": \"通用黑名单检验规则-EHS风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无华腾或中软经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-24\",\n      \"rule_name\": \"简历与客户原始需求的关联\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历与 jr_z77 匹配度高(腾讯IEG天美背景)\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-25\",\n      \"rule_name\": \"华为荣耀竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无华为荣耀经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-26\",\n      \"rule_name\": \"OPPO小米竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无OPPO小米经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-29\",\n      \"rule_name\": \"通用二次入职推荐提醒规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"非本公司(CSI)前员工\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-54\",\n      \"rule_name\": \"对标公司/行业画像库匹配与定向猎挖规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位无负向要求\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-27\",\n      \"rule_name\": \"腾讯亲属关系回避规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"conflict_of_interest 为空\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-28\",\n      \"rule_name\": \"腾讯亲属关系回避处理规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"hsm_feedback 为空\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-35\",\n      \"rule_name\": \"腾讯外籍候选人实名与通道限制规范\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"国籍: 中国\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-38\",\n      \"rule_name\": \"腾讯历史从业经历识别与核实触发\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"FAIL\",\n      \"evidence\": \"简历包含腾讯 IEG 天美经历 (2019-08 至 2025-02), 触发核实挂起\",\n      \"next_action\": \"block\"\n    },\n    {\n      \"rule_id\": \"10-39\",\n      \"rule_name\": \"腾讯历史从业经历核实结果处理\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"hsm_feedback 为空\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-45\",\n      \"rule_name\": \"腾讯正编转外包回流标记\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"former_tencent_employment.employment_type: 正式\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-46\",\n      \"rule_name\": \"腾讯正编转外包回流凭证校验\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"正编转外包受控, 需上传同意回流书面凭证\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-47\",\n      \"rule_name\": \"腾讯婚育风险审视与推荐要点\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"性别: 男\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-40\",\n      \"rule_name\": \"腾讯主动离职人员紧急回流审核\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"腾讯主动离职(2025-02), 距今(2026-05)已满6个月, 但规则逻辑需确认具体BG。此处离职已超1年, 理论通过, 但因10-38挂起。\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-3\",\n      \"rule_name\": \"IEG活跃流程候选人改推拦截\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"当前无其他活跃流程记录\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-43\",\n      \"rule_name\": \"IEG工作室回流候选人互斥标记\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"FAIL\",\n      \"evidence\": \"原工作室: 天美; 目标工作室: 天美。虽不属于跨室禁止, 但因10-38腾讯经历核实中, 暂标FAIL。\",\n      \"next_action\": \"block\"\n    },\n    {\n      \"rule_id\": \"10-52\",\n      \"rule_name\": \"IEG内部技术面试强制校验\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"已标记内部技术面试锁定\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-56\",\n      \"rule_name\": \"腾娱互动子公司回流冷冻期拦截\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无腾娱互动经历\",\n      \"next_action\": \"continue\"\n    }\n  ],\n  \"resume_augmentation\": \"### 简历预筛分析\\n- **核心优势**: 腾讯IEG天美工作室《王者荣耀》资深背景，完美契合岗位需求。硕士学历，精通C++、Lua、Redis、UE。\\n- **风险提示**:\\n    - **腾讯回流**: 候选人为腾讯前正编员工，触发“正编转外包”受控流程，需HSM获取采购部回流凭证。\\n    - **经历核实**: 需核实2025年2月从天美离职的真实原因。\\n    - **年龄逻辑**: 硕士29岁毕业，存在3年偏差，建议核实是否有复读或工作后再考研情况。\",\n  \"notifications\": [\n    {\n      \"recipient\": \"HSM\",\n      \"channel\": \"Email\",\n      \"rule_id\": \"10-38\",\n      \"message\": \"候选人赵六有腾讯历史经历，请核实离场原因。\"\n    },\n    {\n      \"recipient\": \"HSM\",\n      \"channel\": \"InApp\",\n      \"rule_id\": \"10-46\",\n      \"message\": \"候选人赵六为腾讯正编转外包，请上传回流凭证。\"\n    },\n    {\n      \"recipient\": \"招聘专员\",\n      \"channel\": \"InApp\",\n      \"rule_id\": \"10-12\",\n      \"message\": \"候选人赵六毕业年龄异常(29岁)，请核实教育周期。\"\n    }\n  ]\n}"
+}

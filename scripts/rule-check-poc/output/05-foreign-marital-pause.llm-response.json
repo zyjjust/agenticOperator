@@ -1,0 +1,307 @@
+{
+  "model_used": "google/gemini-3-flash-preview",
+  "duration_ms": 203173,
+  "prompt_tokens": 9359,
+  "completion_tokens": 3147,
+  "expected_decision": "PAUSE",
+  "expected_reason": "美籍 28F未婚 数据分析师投腾讯 CDG,10-35 + 10-47 → REVIEW",
+  "parsed_json": {
+    "candidate_id": "c05-zhouqi-foreign-data",
+    "job_requisition_id": "jr_y88",
+    "client_id": "CLI_TENCENT",
+    "overall_decision": "PAUSE",
+    "drop_reasons": [],
+    "pause_reasons": [
+      "10-35:foreign_nationality",
+      "10-47:female_age_marriage_risk"
+    ],
+    "rule_flags": [
+      {
+        "rule_id": "10-5",
+        "rule_name": "简历匹配硬性要求一票否决",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "学历:硕士(要求本科); 技能:Python, SQL(匹配); 年龄:28(要求22-35)",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-6",
+        "rule_name": "推荐前置简历匹配与硬性要求规则",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "命中加分项: Spark, Tableau",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-7",
+        "rule_name": "候选人期望薪资校验",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "期望薪资 30k-40k 在岗位 25k-40k 范围内",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-8",
+        "rule_name": "候选人意愿度校验",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "外包接受度: 接受",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-9",
+        "rule_name": "简历履历空窗期检测与标记",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "2019-08至2021-06, 2021-07至2024-12, 间隔小于3个月",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-10",
+        "rule_name": "简历履历空窗期与职业稳定性风险判定",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "平均工作时长约2.5年,无严重职业风险",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-12",
+        "rule_name": "学历年龄逻辑校验与风险预警",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "1997年出生,2019年硕士毕业,年龄22岁,符合常规教育周期",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-14",
+        "rule_name": "语言能力硬性门槛判断",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位未标注外语/海外/国际化标签",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-15",
+        "rule_name": "特殊工时与出差意愿匹配",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位未带有轮班/出差等特殊标签",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-16",
+        "rule_name": "通用黑名单检验规则-被动释放人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无华腾或中软国际工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-17",
+        "rule_name": "通用黑名单检验规则-高风险回流人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无华腾或中软国际工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-18",
+        "rule_name": "通用黑名单检验规则-EHS风险回流人员",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无华腾或中软国际工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-24",
+        "rule_name": "简历与客户原始需求的关联",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "已关联至 jr_y88 数据分析工程师",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-25",
+        "rule_name": "华为荣耀竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无华为/荣耀工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-26",
+        "rule_name": "OPPO小米竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无OPPO/小米工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-29",
+        "rule_name": "通用二次入职推荐提醒规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "former_csi_employment 为 null",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-54",
+        "rule_name": "对标公司/行业画像库匹配与定向猎挖规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位需求中 negative_requirement 为空",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-27",
+        "rule_name": "腾讯亲属关系回避规则",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "conflict_of_interest 为空",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-28",
+        "rule_name": "腾讯亲属关系回避处理规则",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "hsm_feedback 为 null",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-35",
+        "rule_name": "腾讯外籍候选人实名与通道限制规范",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "国籍: 美国",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-38",
+        "rule_name": "腾讯历史从业经历识别与核实触发",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无腾讯相关工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-39",
+        "rule_name": "腾讯历史从业经历核实结果处理",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "hsm_feedback 为 null",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-45",
+        "rule_name": "腾讯正编转外包回流标记",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无腾讯正式岗位经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-46",
+        "rule_name": "腾讯正编转外包回流凭证校验",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "未被标记为正编转外包受控",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-47",
+        "rule_name": "腾讯婚育风险审视与推荐要点",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "性别:女, 年龄:28, 婚育:未婚; 命中加分项(Spark, Tableau)占总加分项100%",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-42",
+        "rule_name": "CDG事业群6个月回流冷冻期绝对拦截",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中无腾讯相关工作经历",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-53",
+        "rule_name": "非IEG事业群跳过内部技术面试",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "目标事业群为 CDG",
+        "next_action": "continue"
+      }
+    ],
+    "resume_augmentation": "### 简历预筛标签\n- **加分项命中**: Spark, Tableau\n- **外籍身份**: 美国籍 (需走外籍通道)\n- **婚育风险核查**: 女性/28岁/未婚 (加分项覆盖率 100%，需 HSM 审核)\n- **事业群策略**: CDG 岗位，默认跳过内部技术面试",
+    "notifications": [
+      {
+        "recipient": "HSM",
+        "channel": "Email",
+        "rule_id": "10-35",
+        "message": "候选人 周七 为美国籍，请确认推荐通道为外籍人在国内工作品类通道。"
+      },
+      {
+        "recipient": "HSM",
+        "channel": "InApp",
+        "rule_id": "10-47",
+        "message": "候选人 周七 命中婚育风险审视规则（女/28岁/未婚），其加分项命中比例为 100%，请审核是否准予推荐。"
+      }
+    ]
+  },
+  "raw_text": "{\n  \"candidate_id\": \"c05-zhouqi-foreign-data\",\n  \"job_requisition_id\": \"jr_y88\",\n  \"client_id\": \"CLI_TENCENT\",\n  \"overall_decision\": \"PAUSE\",\n  \"drop_reasons\": [],\n  \"pause_reasons\": [\n    \"10-35:foreign_nationality\",\n    \"10-47:female_age_marriage_risk\"\n  ],\n  \"rule_flags\": [\n    {\n      \"rule_id\": \"10-5\",\n      \"rule_name\": \"简历匹配硬性要求一票否决\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"学历:硕士(要求本科); 技能:Python, SQL(匹配); 年龄:28(要求22-35)\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-6\",\n      \"rule_name\": \"推荐前置简历匹配与硬性要求规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"命中加分项: Spark, Tableau\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-7\",\n      \"rule_name\": \"候选人期望薪资校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"期望薪资 30k-40k 在岗位 25k-40k 范围内\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-8\",\n      \"rule_name\": \"候选人意愿度校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"外包接受度: 接受\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-9\",\n      \"rule_name\": \"简历履历空窗期检测与标记\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"2019-08至2021-06, 2021-07至2024-12, 间隔小于3个月\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-10\",\n      \"rule_name\": \"简历履历空窗期与职业稳定性风险判定\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"平均工作时长约2.5年,无严重职业风险\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-12\",\n      \"rule_name\": \"学历年龄逻辑校验与风险预警\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"1997年出生,2019年硕士毕业,年龄22岁,符合常规教育周期\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-14\",\n      \"rule_name\": \"语言能力硬性门槛判断\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位未标注外语/海外/国际化标签\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-15\",\n      \"rule_name\": \"特殊工时与出差意愿匹配\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位未带有轮班/出差等特殊标签\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-16\",\n      \"rule_name\": \"通用黑名单检验规则-被动释放人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无华腾或中软国际工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-17\",\n      \"rule_name\": \"通用黑名单检验规则-高风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无华腾或中软国际工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-18\",\n      \"rule_name\": \"通用黑名单检验规则-EHS风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无华腾或中软国际工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-24\",\n      \"rule_name\": \"简历与客户原始需求的关联\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"已关联至 jr_y88 数据分析工程师\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-25\",\n      \"rule_name\": \"华为荣耀竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无华为/荣耀工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-26\",\n      \"rule_name\": \"OPPO小米竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无OPPO/小米工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-29\",\n      \"rule_name\": \"通用二次入职推荐提醒规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"former_csi_employment 为 null\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-54\",\n      \"rule_name\": \"对标公司/行业画像库匹配与定向猎挖规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位需求中 negative_requirement 为空\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-27\",\n      \"rule_name\": \"腾讯亲属关系回避规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"conflict_of_interest 为空\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-28\",\n      \"rule_name\": \"腾讯亲属关系回避处理规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"hsm_feedback 为 null\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-35\",\n      \"rule_name\": \"腾讯外籍候选人实名与通道限制规范\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"国籍: 美国\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-38\",\n      \"rule_name\": \"腾讯历史从业经历识别与核实触发\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无腾讯相关工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-39\",\n      \"rule_name\": \"腾讯历史从业经历核实结果处理\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"hsm_feedback 为 null\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-45\",\n      \"rule_name\": \"腾讯正编转外包回流标记\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无腾讯正式岗位经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-46\",\n      \"rule_name\": \"腾讯正编转外包回流凭证校验\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"未被标记为正编转外包受控\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-47\",\n      \"rule_name\": \"腾讯婚育风险审视与推荐要点\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"性别:女, 年龄:28, 婚育:未婚; 命中加分项(Spark, Tableau)占总加分项100%\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-42\",\n      \"rule_name\": \"CDG事业群6个月回流冷冻期绝对拦截\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中无腾讯相关工作经历\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-53\",\n      \"rule_name\": \"非IEG事业群跳过内部技术面试\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"目标事业群为 CDG\",\n      \"next_action\": \"continue\"\n    }\n  ],\n  \"resume_augmentation\": \"### 简历预筛标签\\n- **加分项命中**: Spark, Tableau\\n- **外籍身份**: 美国籍 (需走外籍通道)\\n- **婚育风险核查**: 女性/28岁/未婚 (加分项覆盖率 100%，需 HSM 审核)\\n- **事业群策略**: CDG 岗位，默认跳过内部技术面试\",\n  \"notifications\": [\n    {\n      \"recipient\": \"HSM\",\n      \"channel\": \"Email\",\n      \"rule_id\": \"10-35\",\n      \"message\": \"候选人 周七 为美国籍，请确认推荐通道为外籍人在国内工作品类通道。\"\n    },\n    {\n      \"recipient\": \"HSM\",\n      \"channel\": \"InApp\",\n      \"rule_id\": \"10-47\",\n      \"message\": \"候选人 周七 命中婚育风险审视规则（女/28岁/未婚），其加分项命中比例为 100%，请审核是否准予推荐。\"\n    }\n  ]\n}"
+}

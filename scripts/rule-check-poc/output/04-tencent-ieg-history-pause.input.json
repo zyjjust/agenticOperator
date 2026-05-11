@@ -1,0 +1,146 @@
+{
+  "_scenario": {
+    "name": "04-tencent-ieg-history-pause",
+    "candidate_label": "赵六 — 游戏后端,前腾讯 IEG 天美工作室员工,主动离职 14 月",
+    "jd_label": "腾讯 IEG 天美工作室 游戏服务端 (jr_z77)",
+    "dims": {
+      "client_id": "腾讯",
+      "business_group": "IEG",
+      "studio": "天美"
+    },
+    "source": "neo4j"
+  },
+  "runtime_context": {
+    "upload_id": "upl_004_c04-zhao",
+    "candidate_id": "c04-zhaoliu-tencent-ieg",
+    "resume_id": "res_004",
+    "employee_id": "EMP_REC_007",
+    "bucket": "recruit-resume-raw",
+    "object_key": "2026/05/upl_004_c04-zhao.pdf",
+    "filename": "c04-zhaoliu-tencent-ieg.pdf",
+    "hr_folder": "/HR/2026-05",
+    "etag": null,
+    "size": 383000,
+    "source_event_name": "ResumeUploaded",
+    "received_at": "2026-05-09T11:23:00Z",
+    "parsed_at": "2026-05-09T11:23:08Z",
+    "parser_version": "v7-pull-model@2026-05-08",
+    "trace_id": "trace_004_moycgz9g",
+    "request_id": "req_004"
+  },
+  "resume": {
+    "name": "赵六",
+    "email": "zhaoliu@example.com",
+    "phone": "13800000003",
+    "location": "深圳",
+    "birth_date": "1990-04-15",
+    "gender": "男",
+    "nationality": "中国",
+    "marital_status": "已婚已育",
+    "summary": "6 年游戏后端开发经验,前腾讯 IEG 天美工作室资深工程师",
+    "experience": [
+      {
+        "title": "游戏后端工程师",
+        "company": "某游戏公司",
+        "location": "深圳",
+        "startDate": "2025-03",
+        "endDate": "2026-04",
+        "description": "负责手游服务端架构,C++ + Lua + Redis"
+      },
+      {
+        "title": "资深游戏工程师",
+        "company": "腾讯",
+        "location": "深圳",
+        "startDate": "2019-08",
+        "endDate": "2025-02",
+        "description": "腾讯 IEG 天美工作室,负责《王者荣耀》后端架构"
+      }
+    ],
+    "education": [
+      {
+        "degree": "硕士",
+        "field": "计算机科学",
+        "institution": "北京大学",
+        "graduationYear": "2019"
+      }
+    ],
+    "skills": [
+      "C++",
+      "Lua",
+      "Redis",
+      "Protobuf",
+      "UnrealEngine"
+    ],
+    "languages": [
+      {
+        "language": "英语",
+        "proficiency": "CET-6 510"
+      }
+    ],
+    "conflict_of_interest": [],
+    "expected_salary_range": "45k-58k",
+    "outsourcing_acceptance": "接受",
+    "labor_form_preference": "正编",
+    "former_csi_employment": null,
+    "former_tencent_employment": {
+      "company": "腾讯",
+      "business_group": "IEG",
+      "studio": "天美",
+      "employment_type": "正式",
+      "start_date": "2019-08",
+      "end_date": "2025-02",
+      "leave_type": "主动离场"
+    },
+    "gap_periods": []
+  },
+  "job_requisition": {
+    "job_requisition_id": "jr_z77",
+    "job_requisition_specification_id": "jrs_z77_001",
+    "client_id": "CLI_TENCENT",
+    "client_department_id": "CLI_TENCENT_IEG_TIANMEI",
+    "client_job_id": "TC-IEG-GAME-2026-005",
+    "client_job_title": "游戏服务端开发工程师",
+    "job_responsibility": "天美工作室游戏服务端架构,负责《王者荣耀》后端模块",
+    "job_requirement": "3+ 年游戏服务端经验,精通 C++ 与 Lua",
+    "must_have_skills": [
+      "C++",
+      "Lua"
+    ],
+    "nice_to_have_skills": [
+      "UnrealEngine",
+      "Redis"
+    ],
+    "negative_requirement": "",
+    "language_requirements": "",
+    "city": "深圳",
+    "salary_range": "35k-60k",
+    "headcount": 3,
+    "work_years": 3,
+    "degree_requirement": "本科",
+    "education_requirement": "全日制",
+    "interview_mode": "线下",
+    "expected_level": "senior",
+    "recruitment_type": "正编",
+    "client_business_group": "IEG",
+    "client_studio": "天美",
+    "age_range": {
+      "min": 22,
+      "max": 35
+    },
+    "tags": []
+  },
+  "job_requisition_specification": {
+    "job_requisition_specification_id": "jrs_z77_001",
+    "hro_service_contract_id": "HSC_2026_TC_001",
+    "client_id": "CLI_TENCENT",
+    "start_date": "2026-03-10",
+    "deadline": "2026-06-30",
+    "priority": "P0",
+    "is_exclusive": true,
+    "number_of_competitors": 1,
+    "status": "recruiting",
+    "hsm_employee_id": "EMP_HSM_002",
+    "recruiter_employee_id": "EMP_REC_011"
+  },
+  "hsm_feedback": null
+}

@@ -1,0 +1,300 @@
+{
+  "model_used": "google/gemini-3-flash-preview",
+  "duration_ms": 16907,
+  "prompt_tokens": 9445,
+  "completion_tokens": 3213,
+  "expected_decision": "PAUSE",
+  "expected_reason": "前端候选人 1.5 月前从华为离职,通用 10-25 < 3 月冷冻期 → REVIEW",
+  "parsed_json": {
+    "candidate_id": "c02-lisi-huawei-recent",
+    "job_requisition_id": "jr_x99",
+    "client_id": "CLI_TENCENT",
+    "overall_decision": "PAUSE",
+    "drop_reasons": [],
+    "pause_reasons": [
+      "10-25:competitor_cooling_off"
+    ],
+    "rule_flags": [
+      {
+        "rule_id": "10-5",
+        "rule_name": "简历匹配硬性要求一票否决",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "学历：本科（哈工大）；技能：React, TypeScript, Webpack；语言：CET-6 520；年龄：33岁（1992年生）；性别：男。均符合JD要求。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-6",
+        "rule_name": "推荐前置简历匹配与硬性要求规则",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "命中加分项：Next.js (nice_to_have_skills)",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-7",
+        "rule_name": "候选人期望薪资校验",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "期望薪资 40k-50k，在岗位薪资范围 30k-50k 内。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-8",
+        "rule_name": "候选人意愿度校验",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "外包接受度：接受；劳动形式偏好：正编。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-9",
+        "rule_name": "简历履历空窗期检测与标记",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "毕业2017-07至首份工作2017-07无空窗；京东离职2019-05至华为入职2019-06无空窗；华为离职2026-03至今不足3个月。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-10",
+        "rule_name": "简历履历空窗期与职业稳定性风险判定",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "无超过1年空窗期。平均每段工作时长：京东1年10个月，华为6年9个月，稳定性良好。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-12",
+        "rule_name": "学历年龄逻辑校验与风险预警",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "1992年出生，2017年本科毕业，毕业年龄25岁。对比基准22-23岁，偏差2岁，处于合理波动范围。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-14",
+        "rule_name": "语言能力硬性门槛判断",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历提供 CET-6 520分，高于JD要求的 480分。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-15",
+        "rule_name": "特殊工时与出差意愿匹配",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位未带有轮班、夜班、倒班或长期出差标签。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-16",
+        "rule_name": "通用黑名单检验规则-被动释放人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-17",
+        "rule_name": "通用黑名单检验规则-高风险回流人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-18",
+        "rule_name": "通用黑名单检验规则-EHS风险回流人员",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-24",
+        "rule_name": "简历与客户原始需求的关联",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历已关联至原始需求 jr_x99。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-25",
+        "rule_name": "华为荣耀竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "候选人最近一段经历在华为（2019-06至2026-03），离职日期距今（2026-05-09）不足3个月。",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-26",
+        "rule_name": "OPPO小米竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现OPPO、小米任职记录。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-29",
+        "rule_name": "通用二次入职推荐提醒规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历未显示曾在我司（华腾/中软）任职。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-54",
+        "rule_name": "对标公司/行业画像库匹配与定向猎挖规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "最近一段经历为华为，不属于负向要求“外包从业经历超过 2 年”。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-27",
+        "rule_name": "腾讯亲属关系回避规则",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "conflict_of_interest 字段为空，未申报亲属关系。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-28",
+        "rule_name": "腾讯亲属关系回避处理规则",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "hsm_feedback 为空，无确认结果。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-35",
+        "rule_name": "腾讯外籍候选人实名与通道限制规范",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "国籍为中国。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-38",
+        "rule_name": "腾讯历史从业经历识别与核实触发",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历工作履历中未包含腾讯或腾讯外包经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-39",
+        "rule_name": "腾讯历史从业经历核实结果处理",
+        "applicable_client": "腾讯",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无腾讯历史背景，不适用。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-45",
+        "rule_name": "腾讯正编转外包回流标记",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "无腾讯历史背景。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-46",
+        "rule_name": "腾讯正编转外包回流凭证校验",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "未被标记为正编转外包受控状态。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-47",
+        "rule_name": "腾讯婚育风险审视与推荐要点",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "候选人为男性。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-40",
+        "rule_name": "腾讯主动离职人员紧急回流审核",
+        "applicable_client": "腾讯",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "无腾讯历史从业经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-53",
+        "rule_name": "非IEG事业群跳过内部技术面试",
+        "applicable_client": "腾讯",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "目标事业群为 PCG，符合跳过面试条件。",
+        "next_action": "continue"
+      }
+    ],
+    "resume_augmentation": "### 简历预筛分析\n- **加分项命中**: 具备 `Next.js` 技能。\n- **风险提示**: 候选人来自华为，且离职时间（2026-03）距今不足3个月，触发竞对互不挖角红线，需人工核实。\n- **流程说明**: 目标部门为 PCG，根据规则 10-53 将跳过内部技术面试。",
+    "notifications": [
+      {
+        "recipient": "招聘专员",
+        "channel": "InApp",
+        "rule_id": "10-25",
+        "message": "候选人李四最近一段经历在华为，离职不足3个月，请确认竞对互不挖角风险。"
+      }
+    ]
+  },
+  "raw_text": "{\n  \"candidate_id\": \"c02-lisi-huawei-recent\",\n  \"job_requisition_id\": \"jr_x99\",\n  \"client_id\": \"CLI_TENCENT\",\n  \"overall_decision\": \"PAUSE\",\n  \"drop_reasons\": [],\n  \"pause_reasons\": [\n    \"10-25:competitor_cooling_off\"\n  ],\n  \"rule_flags\": [\n    {\n      \"rule_id\": \"10-5\",\n      \"rule_name\": \"简历匹配硬性要求一票否决\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"学历：本科（哈工大）；技能：React, TypeScript, Webpack；语言：CET-6 520；年龄：33岁（1992年生）；性别：男。均符合JD要求。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-6\",\n      \"rule_name\": \"推荐前置简历匹配与硬性要求规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"命中加分项：Next.js (nice_to_have_skills)\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-7\",\n      \"rule_name\": \"候选人期望薪资校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"期望薪资 40k-50k，在岗位薪资范围 30k-50k 内。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-8\",\n      \"rule_name\": \"候选人意愿度校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"外包接受度：接受；劳动形式偏好：正编。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-9\",\n      \"rule_name\": \"简历履历空窗期检测与标记\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"毕业2017-07至首份工作2017-07无空窗；京东离职2019-05至华为入职2019-06无空窗；华为离职2026-03至今不足3个月。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-10\",\n      \"rule_name\": \"简历履历空窗期与职业稳定性风险判定\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"无超过1年空窗期。平均每段工作时长：京东1年10个月，华为6年9个月，稳定性良好。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-12\",\n      \"rule_name\": \"学历年龄逻辑校验与风险预警\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"1992年出生，2017年本科毕业，毕业年龄25岁。对比基准22-23岁，偏差2岁，处于合理波动范围。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-14\",\n      \"rule_name\": \"语言能力硬性门槛判断\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历提供 CET-6 520分，高于JD要求的 480分。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-15\",\n      \"rule_name\": \"特殊工时与出差意愿匹配\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位未带有轮班、夜班、倒班或长期出差标签。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-16\",\n      \"rule_name\": \"通用黑名单检验规则-被动释放人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-17\",\n      \"rule_name\": \"通用黑名单检验规则-高风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-18\",\n      \"rule_name\": \"通用黑名单检验规则-EHS风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-24\",\n      \"rule_name\": \"简历与客户原始需求的关联\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历已关联至原始需求 jr_x99。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-25\",\n      \"rule_name\": \"华为荣耀竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"候选人最近一段经历在华为（2019-06至2026-03），离职日期距今（2026-05-09）不足3个月。\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-26\",\n      \"rule_name\": \"OPPO小米竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现OPPO、小米任职记录。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-29\",\n      \"rule_name\": \"通用二次入职推荐提醒规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历未显示曾在我司（华腾/中软）任职。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-54\",\n      \"rule_name\": \"对标公司/行业画像库匹配与定向猎挖规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"最近一段经历为华为，不属于负向要求“外包从业经历超过 2 年”。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-27\",\n      \"rule_name\": \"腾讯亲属关系回避规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"conflict_of_interest 字段为空，未申报亲属关系。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-28\",\n      \"rule_name\": \"腾讯亲属关系回避处理规则\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"hsm_feedback 为空，无确认结果。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-35\",\n      \"rule_name\": \"腾讯外籍候选人实名与通道限制规范\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"国籍为中国。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-38\",\n      \"rule_name\": \"腾讯历史从业经历识别与核实触发\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历工作履历中未包含腾讯或腾讯外包经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-39\",\n      \"rule_name\": \"腾讯历史从业经历核实结果处理\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无腾讯历史背景，不适用。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-45\",\n      \"rule_name\": \"腾讯正编转外包回流标记\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"无腾讯历史背景。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-46\",\n      \"rule_name\": \"腾讯正编转外包回流凭证校验\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"未被标记为正编转外包受控状态。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-47\",\n      \"rule_name\": \"腾讯婚育风险审视与推荐要点\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"候选人为男性。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-40\",\n      \"rule_name\": \"腾讯主动离职人员紧急回流审核\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"无腾讯历史从业经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-53\",\n      \"rule_name\": \"非IEG事业群跳过内部技术面试\",\n      \"applicable_client\": \"腾讯\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"目标事业群为 PCG，符合跳过面试条件。\",\n      \"next_action\": \"continue\"\n    }\n  ],\n  \"resume_augmentation\": \"### 简历预筛分析\\n- **加分项命中**: 具备 `Next.js` 技能。\\n- **风险提示**: 候选人来自华为，且离职时间（2026-03）距今不足3个月，触发竞对互不挖角红线，需人工核实。\\n- **流程说明**: 目标部门为 PCG，根据规则 10-53 将跳过内部技术面试。\",\n  \"notifications\": [\n    {\n      \"recipient\": \"招聘专员\",\n      \"channel\": \"InApp\",\n      \"rule_id\": \"10-25\",\n      \"message\": \"候选人李四最近一段经历在华为，离职不足3个月，请确认竞对互不挖角风险。\"\n    }\n  ]\n}"
+}

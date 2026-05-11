@@ -1,0 +1,145 @@
+{
+  "_scenario": {
+    "name": "03-csi-blacklist-drop",
+    "candidate_label": "王五 — Java 后端,前华腾员工,离职编码 B8 (有犯罪记录-YCH)",
+    "jd_label": "腾讯 IEG 后台 Java 工程师 (jr_v55)",
+    "dims": {
+      "client_id": "腾讯",
+      "business_group": "IEG",
+      "studio": null
+    },
+    "source": "neo4j"
+  },
+  "runtime_context": {
+    "upload_id": "upl_003_c03-wang",
+    "candidate_id": "c03-wangwu-csi-blacklist",
+    "resume_id": "res_003",
+    "employee_id": "EMP_REC_007",
+    "bucket": "recruit-resume-raw",
+    "object_key": "2026/05/upl_003_c03-wang.pdf",
+    "filename": "c03-wangwu-csi-blacklist.pdf",
+    "hr_folder": "/HR/2026-05",
+    "etag": null,
+    "size": 382000,
+    "source_event_name": "ResumeUploaded",
+    "received_at": "2026-05-09T11:23:00Z",
+    "parsed_at": "2026-05-09T11:23:08Z",
+    "parser_version": "v7-pull-model@2026-05-08",
+    "trace_id": "trace_003_moycgz9g",
+    "request_id": "req_003"
+  },
+  "resume": {
+    "name": "王五",
+    "email": "wangwu@example.com",
+    "phone": "13800000002",
+    "location": "广州",
+    "birth_date": "1988-11-03",
+    "gender": "男",
+    "nationality": "中国",
+    "marital_status": "已婚已育",
+    "summary": "10 年 Java 后端开发经验,擅长分布式系统",
+    "experience": [
+      {
+        "title": "Java 后端工程师",
+        "company": "某互联网公司",
+        "location": "广州",
+        "startDate": "2023-06",
+        "endDate": "2026-04",
+        "description": "负责订单交易系统重构,Spring Boot + Kafka"
+      },
+      {
+        "title": "Java 工程师",
+        "company": "华腾",
+        "location": "广州",
+        "startDate": "2020-03",
+        "endDate": "2023-05",
+        "description": "基础平台部 Java 后端开发"
+      }
+    ],
+    "education": [
+      {
+        "degree": "本科",
+        "field": "软件工程",
+        "institution": "华南理工大学",
+        "graduationYear": "2014"
+      }
+    ],
+    "skills": [
+      "Java",
+      "Spring Boot",
+      "MySQL",
+      "Redis",
+      "Kafka"
+    ],
+    "languages": [
+      {
+        "language": "英语",
+        "proficiency": "CET-4"
+      }
+    ],
+    "conflict_of_interest": [],
+    "expected_salary_range": "35k-45k",
+    "outsourcing_acceptance": "接受",
+    "labor_form_preference": "正编",
+    "former_csi_employment": {
+      "company": "华腾",
+      "start_date": "2020-03",
+      "end_date": "2023-05",
+      "leave_code": "B8",
+      "leave_reason": "有犯罪记录(YCH)"
+    },
+    "former_tencent_employment": null,
+    "gap_periods": []
+  },
+  "job_requisition": {
+    "job_requisition_id": "jr_v55",
+    "job_requisition_specification_id": "jrs_v55_001",
+    "client_id": "CLI_TENCENT",
+    "client_department_id": "CLI_TENCENT_IEG_INFRA",
+    "client_job_id": "TC-IEG-JAVA-2026-008",
+    "client_job_title": "后台 Java 工程师",
+    "job_responsibility": "IEG 后台业务系统开发,会员/支付/订单核心模块",
+    "job_requirement": "5+ 年 Java 后端经验,熟悉分布式系统",
+    "must_have_skills": [
+      "Java",
+      "Spring Boot",
+      "MySQL"
+    ],
+    "nice_to_have_skills": [
+      "Redis",
+      "Kafka"
+    ],
+    "negative_requirement": "",
+    "language_requirements": "",
+    "city": "深圳",
+    "salary_range": "30k-50k",
+    "headcount": 2,
+    "work_years": 5,
+    "degree_requirement": "本科",
+    "education_requirement": "全日制",
+    "interview_mode": "线下",
+    "expected_level": "senior",
+    "recruitment_type": "正编",
+    "client_business_group": "IEG",
+    "client_studio": null,
+    "age_range": {
+      "min": 22,
+      "max": 38
+    },
+    "tags": []
+  },
+  "job_requisition_specification": {
+    "job_requisition_specification_id": "jrs_v55_001",
+    "hro_service_contract_id": "HSC_2026_TC_001",
+    "client_id": "CLI_TENCENT",
+    "start_date": "2026-04-12",
+    "deadline": "2026-08-31",
+    "priority": "P1",
+    "is_exclusive": false,
+    "number_of_competitors": 2,
+    "status": "recruiting",
+    "hsm_employee_id": "EMP_HSM_002",
+    "recruiter_employee_id": "EMP_REC_011"
+  },
+  "hsm_feedback": null
+}

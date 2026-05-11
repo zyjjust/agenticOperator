@@ -1,0 +1,310 @@
+{
+  "model_used": "google/gemini-3-flash-preview",
+  "duration_ms": 17110,
+  "prompt_tokens": 9362,
+  "completion_tokens": 3430,
+  "expected_decision": "PAUSE",
+  "expected_reason": "前字节正编员工投字节 TikTok,字节 10-49 (字节正编回流凭证校验) → REVIEW",
+  "parsed_json": {
+    "candidate_id": "c06-qianba-bytedance-history",
+    "job_requisition_id": "jr_w66",
+    "client_id": "CLI_BYTEDANCE",
+    "overall_decision": "PAUSE",
+    "drop_reasons": [],
+    "pause_reasons": [
+      "10-49:former_bytedance_employee"
+    ],
+    "rule_flags": [
+      {
+        "rule_id": "10-5",
+        "rule_name": "简历匹配硬性要求一票否决",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "学历：本科（南京大学）；必备技能：React, TypeScript；语言：CET-6 550；年龄：28岁（1995-12-10）；性别：男。均符合JD要求。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-6",
+        "rule_name": "推荐前置简历匹配与硬性要求规则",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "命中加分项：Next.js（简历skills包含），海外业务经验（简历提及TikTok/抖音电商架构，虽未明示海外但具备相关背景）。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-7",
+        "rule_name": "候选人期望薪资校验",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "期望薪资 40k-50k，在岗位薪资范围 30k-50k 内。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-8",
+        "rule_name": "候选人意愿度校验",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "外包接受度：接受；劳务形式偏好：正编。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-9",
+        "rule_name": "简历履历空窗期检测与标记",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "毕业(2020-07)至首份工作(2020-07)无空窗；美团(2024-04)与字节(2024-03)衔接紧密，无超过3个月空窗。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-10",
+        "rule_name": "简历履历空窗期与职业稳定性风险判定",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "无空窗期记录。平均每段工作时长：字节3.7年，美团2年，稳定性良好。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-12",
+        "rule_name": "学历年龄逻辑校验与风险预警",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "1995年出生，2020年本科毕业，毕业年龄约24-25岁，与基准22-23岁偏差在2岁以内。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-14",
+        "rule_name": "语言能力硬性门槛判断",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "岗位要求CET-6 480以上，候选人提供CET-6 550。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-15",
+        "rule_name": "特殊工时与出差意愿匹配",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位未带有轮班、夜班或长期出差标签。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-16",
+        "rule_name": "通用黑名单检验规则-被动释放人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-17",
+        "rule_name": "通用黑名单检验规则-高风险回流人员",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-18",
+        "rule_name": "通用黑名单检验规则-EHS风险回流人员",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华腾或中软国际历史工作经历。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-24",
+        "rule_name": "简历与客户原始需求的关联",
+        "applicable_client": "通用",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历已关联至原始需求 jr_w66。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-25",
+        "rule_name": "华为荣耀竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现华为、荣耀任职记录。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-26",
+        "rule_name": "OPPO小米竞对与客户互不挖角红线",
+        "applicable_client": "通用",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历中未发现OPPO、小米任职记录。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-29",
+        "rule_name": "通用二次入职推荐提醒规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "简历未显示曾在我司（CSI）任职记录。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-54",
+        "rule_name": "对标公司/行业画像库匹配与定向猎挖规则",
+        "applicable_client": "通用",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "岗位需求中 negative_requirement 为空。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-32",
+        "rule_name": "岗位冷冻期规则",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "系统未提供历史推荐记录数据。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-33",
+        "rule_name": "字节客户退场回流约束规则",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "系统未提供历史退场记录数据。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-34",
+        "rule_name": "字节跳动友商非BPO外包经历回流冷冻期拦截",
+        "applicable_client": "字节",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "候选人曾任职于字节跳动(2020-07至2024-03)，但简历描述为“前端工程师/架构师”，未体现通过友商外包派驻。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-1",
+        "rule_name": "字节新需求下发滞留简历优先转推",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "符合新需求下发匹配逻辑。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-2",
+        "rule_name": "字节新需求下发HC冻结候选人召回",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "无HC冻结历史记录。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-11",
+        "rule_name": "求职意向劳务形式校验",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "候选人偏好“正编”，岗位为“正编”，匹配。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-21",
+        "rule_name": "岗位年龄红线与隐形门槛判定",
+        "applicable_client": "字节",
+        "severity": "terminal",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "岗位上限32岁，候选人28岁，符合要求。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-22",
+        "rule_name": "岗位年龄隐形门槛判定",
+        "applicable_client": "字节",
+        "severity": "terminal",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "岗位已设定明确年龄上限，不适用隐形门槛判定。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-36",
+        "rule_name": "字节婚育风险审视与推荐要点",
+        "applicable_client": "字节",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "PASS",
+        "evidence": "候选人为男性，不触发女性婚育风险规则。",
+        "next_action": "continue"
+      },
+      {
+        "rule_id": "10-49",
+        "rule_name": "字节正编员工回流标记与凭证校验",
+        "applicable_client": "字节",
+        "severity": "needs_human",
+        "applicable": true,
+        "result": "REVIEW",
+        "evidence": "简历显示 2020-07 至 2024-03 在“字节跳动”担任“前端工程师 / 架构师”，识别为正编回流人员。",
+        "next_action": "pause"
+      },
+      {
+        "rule_id": "10-51",
+        "rule_name": "字节正编回流客户BP确认放行",
+        "applicable_client": "字节",
+        "severity": "flag_only",
+        "applicable": false,
+        "result": "NOT_APPLICABLE",
+        "evidence": "尚未完成合规凭证校验。",
+        "next_action": "continue"
+      }
+    ],
+    "resume_augmentation": "### 简历预筛分析\n- **硬性门槛**: 满足学历(本科)、技能(React/TS)、语言(CET-6 550)及年龄要求。\n- **加分项**: 命中 Next.js 技能标签。\n- **风险提示**: \n    - **正编回流**: 候选人曾任职于字节跳动(2020-2024)，需按规程获取合规凭证并联系BP确认。\n- **稳定性**: 职业生涯无空窗期，单段工作经验均超过2年，稳定性优异。",
+    "notifications": [
+      {
+        "recipient": "招聘专员",
+        "channel": "InApp",
+        "rule_id": "10-49",
+        "message": "候选人钱八存在字节跳动历史正编经历(2020-07至2024-03)，请获取并上传合规凭证以继续流程。"
+      }
+    ]
+  },
+  "raw_text": "{\n  \"candidate_id\": \"c06-qianba-bytedance-history\",\n  \"job_requisition_id\": \"jr_w66\",\n  \"client_id\": \"CLI_BYTEDANCE\",\n  \"overall_decision\": \"PAUSE\",\n  \"drop_reasons\": [],\n  \"pause_reasons\": [\n    \"10-49:former_bytedance_employee\"\n  ],\n  \"rule_flags\": [\n    {\n      \"rule_id\": \"10-5\",\n      \"rule_name\": \"简历匹配硬性要求一票否决\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"学历：本科（南京大学）；必备技能：React, TypeScript；语言：CET-6 550；年龄：28岁（1995-12-10）；性别：男。均符合JD要求。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-6\",\n      \"rule_name\": \"推荐前置简历匹配与硬性要求规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"命中加分项：Next.js（简历skills包含），海外业务经验（简历提及TikTok/抖音电商架构，虽未明示海外但具备相关背景）。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-7\",\n      \"rule_name\": \"候选人期望薪资校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"期望薪资 40k-50k，在岗位薪资范围 30k-50k 内。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-8\",\n      \"rule_name\": \"候选人意愿度校验\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"外包接受度：接受；劳务形式偏好：正编。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-9\",\n      \"rule_name\": \"简历履历空窗期检测与标记\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"毕业(2020-07)至首份工作(2020-07)无空窗；美团(2024-04)与字节(2024-03)衔接紧密，无超过3个月空窗。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-10\",\n      \"rule_name\": \"简历履历空窗期与职业稳定性风险判定\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"无空窗期记录。平均每段工作时长：字节3.7年，美团2年，稳定性良好。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-12\",\n      \"rule_name\": \"学历年龄逻辑校验与风险预警\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"1995年出生，2020年本科毕业，毕业年龄约24-25岁，与基准22-23岁偏差在2岁以内。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-14\",\n      \"rule_name\": \"语言能力硬性门槛判断\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"岗位要求CET-6 480以上，候选人提供CET-6 550。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-15\",\n      \"rule_name\": \"特殊工时与出差意愿匹配\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位未带有轮班、夜班或长期出差标签。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-16\",\n      \"rule_name\": \"通用黑名单检验规则-被动释放人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-17\",\n      \"rule_name\": \"通用黑名单检验规则-高风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-18\",\n      \"rule_name\": \"通用黑名单检验规则-EHS风险回流人员\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华腾或中软国际历史工作经历。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-24\",\n      \"rule_name\": \"简历与客户原始需求的关联\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历已关联至原始需求 jr_w66。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-25\",\n      \"rule_name\": \"华为荣耀竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现华为、荣耀任职记录。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-26\",\n      \"rule_name\": \"OPPO小米竞对与客户互不挖角红线\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历中未发现OPPO、小米任职记录。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-29\",\n      \"rule_name\": \"通用二次入职推荐提醒规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"简历未显示曾在我司（CSI）任职记录。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-54\",\n      \"rule_name\": \"对标公司/行业画像库匹配与定向猎挖规则\",\n      \"applicable_client\": \"通用\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"岗位需求中 negative_requirement 为空。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-32\",\n      \"rule_name\": \"岗位冷冻期规则\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"系统未提供历史推荐记录数据。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-33\",\n      \"rule_name\": \"字节客户退场回流约束规则\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"系统未提供历史退场记录数据。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-34\",\n      \"rule_name\": \"字节跳动友商非BPO外包经历回流冷冻期拦截\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"候选人曾任职于字节跳动(2020-07至2024-03)，但简历描述为“前端工程师/架构师”，未体现通过友商外包派驻。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-1\",\n      \"rule_name\": \"字节新需求下发滞留简历优先转推\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"符合新需求下发匹配逻辑。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-2\",\n      \"rule_name\": \"字节新需求下发HC冻结候选人召回\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"无HC冻结历史记录。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-11\",\n      \"rule_name\": \"求职意向劳务形式校验\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"候选人偏好“正编”，岗位为“正编”，匹配。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-21\",\n      \"rule_name\": \"岗位年龄红线与隐形门槛判定\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"terminal\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"岗位上限32岁，候选人28岁，符合要求。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-22\",\n      \"rule_name\": \"岗位年龄隐形门槛判定\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"terminal\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"岗位已设定明确年龄上限，不适用隐形门槛判定。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-36\",\n      \"rule_name\": \"字节婚育风险审视与推荐要点\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"PASS\",\n      \"evidence\": \"候选人为男性，不触发女性婚育风险规则。\",\n      \"next_action\": \"continue\"\n    },\n    {\n      \"rule_id\": \"10-49\",\n      \"rule_name\": \"字节正编员工回流标记与凭证校验\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"needs_human\",\n      \"applicable\": true,\n      \"result\": \"REVIEW\",\n      \"evidence\": \"简历显示 2020-07 至 2024-03 在“字节跳动”担任“前端工程师 / 架构师”，识别为正编回流人员。\",\n      \"next_action\": \"pause\"\n    },\n    {\n      \"rule_id\": \"10-51\",\n      \"rule_name\": \"字节正编回流客户BP确认放行\",\n      \"applicable_client\": \"字节\",\n      \"severity\": \"flag_only\",\n      \"applicable\": false,\n      \"result\": \"NOT_APPLICABLE\",\n      \"evidence\": \"尚未完成合规凭证校验。\",\n      \"next_action\": \"continue\"\n    }\n  ],\n  \"resume_augmentation\": \"### 简历预筛分析\\n- **硬性门槛**: 满足学历(本科)、技能(React/TS)、语言(CET-6 550)及年龄要求。\\n- **加分项**: 命中 Next.js 技能标签。\\n- **风险提示**: \\n    - **正编回流**: 候选人曾任职于字节跳动(2020-2024)，需按规程获取合规凭证并联系BP确认。\\n- **稳定性**: 职业生涯无空窗期，单段工作经验均超过2年，稳定性优异。\",\n  \"notifications\": [\n    {\n      \"recipient\": \"招聘专员\",\n      \"channel\": \"InApp\",\n      \"rule_id\": \"10-49\",\n      \"message\": \"候选人钱八存在字节跳动历史正编经历(2020-07至2024-03)，请获取并上传合规凭证以继续流程。\"\n    }\n  ]\n}"
+}

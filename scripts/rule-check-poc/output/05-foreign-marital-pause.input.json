@@ -1,0 +1,142 @@
+{
+  "_scenario": {
+    "name": "05-foreign-marital-pause",
+    "candidate_label": "周七 — 数据分析师,美籍华人,28 岁未婚女性",
+    "jd_label": "腾讯 CDG 数据分析师 (jr_y88)",
+    "dims": {
+      "client_id": "腾讯",
+      "business_group": "CDG",
+      "studio": null
+    },
+    "source": "neo4j"
+  },
+  "runtime_context": {
+    "upload_id": "upl_005_c05-zhou",
+    "candidate_id": "c05-zhouqi-foreign-data",
+    "resume_id": "res_005",
+    "employee_id": "EMP_REC_007",
+    "bucket": "recruit-resume-raw",
+    "object_key": "2026/05/upl_005_c05-zhou.pdf",
+    "filename": "c05-zhouqi-foreign-data.pdf",
+    "hr_folder": "/HR/2026-05",
+    "etag": null,
+    "size": 384000,
+    "source_event_name": "ResumeUploaded",
+    "received_at": "2026-05-09T11:23:00Z",
+    "parsed_at": "2026-05-09T11:23:08Z",
+    "parser_version": "v7-pull-model@2026-05-08",
+    "trace_id": "trace_005_moycgz9g",
+    "request_id": "req_005"
+  },
+  "resume": {
+    "name": "周七 / Zhou Qi",
+    "email": "zhouqi@example.com",
+    "phone": "13800000004",
+    "location": "上海",
+    "birth_date": "1997-09-22",
+    "gender": "女",
+    "nationality": "美国",
+    "marital_status": "未婚",
+    "summary": "5 年数据分析经验,前 Meta 高级数据分析师",
+    "experience": [
+      {
+        "title": "高级数据分析师",
+        "company": "Meta",
+        "location": "硅谷",
+        "startDate": "2021-07",
+        "endDate": "2024-12",
+        "description": "负责 Instagram 增长数据建模,Python + SQL + Spark"
+      },
+      {
+        "title": "数据分析师",
+        "company": "LinkedIn",
+        "location": "硅谷",
+        "startDate": "2019-08",
+        "endDate": "2021-06",
+        "description": "广告算法效果分析"
+      }
+    ],
+    "education": [
+      {
+        "degree": "硕士",
+        "field": "Statistics",
+        "institution": "Stanford University",
+        "graduationYear": "2019"
+      }
+    ],
+    "skills": [
+      "Python",
+      "SQL",
+      "Spark",
+      "Tableau",
+      "R"
+    ],
+    "languages": [
+      {
+        "language": "英语",
+        "proficiency": "Native"
+      },
+      {
+        "language": "中文",
+        "proficiency": "Native"
+      }
+    ],
+    "conflict_of_interest": [],
+    "expected_salary_range": "30k-40k",
+    "outsourcing_acceptance": "接受",
+    "labor_form_preference": "正编",
+    "former_csi_employment": null,
+    "former_tencent_employment": null,
+    "gap_periods": []
+  },
+  "job_requisition": {
+    "job_requisition_id": "jr_y88",
+    "job_requisition_specification_id": "jrs_y88_001",
+    "client_id": "CLI_TENCENT",
+    "client_department_id": "CLI_TENCENT_CDG",
+    "client_job_id": "TC-DA-2026-002",
+    "client_job_title": "数据分析工程师",
+    "job_responsibility": "CDG 商业化数据分析,广告效果建模,A/B 实验",
+    "job_requirement": "3+ 年数据分析经验,熟悉 Python/SQL/Spark",
+    "must_have_skills": [
+      "Python",
+      "SQL"
+    ],
+    "nice_to_have_skills": [
+      "Spark",
+      "Tableau"
+    ],
+    "negative_requirement": "",
+    "language_requirements": "",
+    "city": "北京",
+    "salary_range": "25k-40k",
+    "headcount": 1,
+    "work_years": 3,
+    "degree_requirement": "本科",
+    "education_requirement": "全日制",
+    "interview_mode": "线下",
+    "expected_level": "mid",
+    "recruitment_type": "正编",
+    "client_business_group": "CDG",
+    "client_studio": null,
+    "age_range": {
+      "min": 22,
+      "max": 35
+    },
+    "tags": []
+  },
+  "job_requisition_specification": {
+    "job_requisition_specification_id": "jrs_y88_001",
+    "hro_service_contract_id": "HSC_2026_TC_001",
+    "client_id": "CLI_TENCENT",
+    "start_date": "2026-04-20",
+    "deadline": "2026-08-20",
+    "priority": "P2",
+    "is_exclusive": false,
+    "number_of_competitors": 5,
+    "status": "recruiting",
+    "hsm_employee_id": "EMP_HSM_001",
+    "recruiter_employee_id": "EMP_REC_007"
+  },
+  "hsm_feedback": null
+}

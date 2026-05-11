@@ -1,0 +1,293 @@
+{
+  "candidate_id": "c02-lisi-huawei-recent",
+  "job_requisition_id": "jr_x99",
+  "client_id": "CLI_TENCENT",
+  "overall_decision": "<KEEP|DROP|PAUSE>",
+  "drop_reasons": [
+    "<rule_id>:<short_code>"
+  ],
+  "pause_reasons": [
+    "<rule_id>:<short_code>"
+  ],
+  "rule_flags": [
+    {
+      "rule_id": "10-5",
+      "rule_name": "简历匹配硬性要求一票否决",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-6",
+      "rule_name": "推荐前置简历匹配与硬性要求规则",
+      "applicable_client": "通用",
+      "severity": "flag_only",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-7",
+      "rule_name": "候选人期望薪资校验",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-8",
+      "rule_name": "候选人意愿度校验",
+      "applicable_client": "通用",
+      "severity": "flag_only",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-9",
+      "rule_name": "简历履历空窗期检测与标记",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-10",
+      "rule_name": "简历履历空窗期与职业稳定性风险判定",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-12",
+      "rule_name": "学历年龄逻辑校验与风险预警",
+      "applicable_client": "通用",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-14",
+      "rule_name": "语言能力硬性门槛判断",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-15",
+      "rule_name": "特殊工时与出差意愿匹配",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-16",
+      "rule_name": "通用黑名单检验规则-被动释放人员",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-17",
+      "rule_name": "通用黑名单检验规则-高风险回流人员",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-18",
+      "rule_name": "通用黑名单检验规则-EHS风险回流人员。",
+      "applicable_client": "通用",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-24",
+      "rule_name": "简历与客户原始需求的关联",
+      "applicable_client": "通用",
+      "severity": "flag_only",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-25",
+      "rule_name": "华为荣耀竞对与客户互不挖角红线",
+      "applicable_client": "通用",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-26",
+      "rule_name": "OPPO小米竞对与客户互不挖角红线",
+      "applicable_client": "通用",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-29",
+      "rule_name": "通用二次入职推荐提醒规则",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-54",
+      "rule_name": "对标公司/行业画像库匹配与定向猎挖规则",
+      "applicable_client": "通用",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-27",
+      "rule_name": "腾讯亲属关系回避规则",
+      "applicable_client": "腾讯",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-28",
+      "rule_name": "腾讯亲属关系回避处理规则",
+      "applicable_client": "腾讯",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-35",
+      "rule_name": "腾讯外籍候选人实名与通道限制规范",
+      "applicable_client": "腾讯",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-38",
+      "rule_name": "腾讯历史从业经历识别与核实触发",
+      "applicable_client": "腾讯",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-39",
+      "rule_name": "腾讯历史从业经历核实结果处理",
+      "applicable_client": "腾讯",
+      "severity": "terminal",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-45",
+      "rule_name": "腾讯正编转外包回流标记",
+      "applicable_client": "腾讯",
+      "severity": "flag_only",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-46",
+      "rule_name": "腾讯正编转外包回流凭证校验",
+      "applicable_client": "腾讯",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-47",
+      "rule_name": "腾讯婚育风险审视与推荐要点",
+      "applicable_client": "腾讯",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-40",
+      "rule_name": "腾讯主动离职人员紧急回流审核",
+      "applicable_client": "腾讯",
+      "severity": "needs_human",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    },
+    {
+      "rule_id": "10-53",
+      "rule_name": "非IEG事业群跳过内部技术面试",
+      "applicable_client": "腾讯",
+      "severity": "flag_only",
+      "applicable": "<true|false>",
+      "result": "<PASS|FAIL|REVIEW|NOT_APPLICABLE>",
+      "evidence": "<引用简历原文>",
+      "next_action": "<continue|block|pause|notify_recruiter|notify_hsm>"
+    }
+  ],
+  "resume_augmentation": "<给 Robohire 的 markdown 标记段>",
+  "notifications": [
+    {
+      "recipient": "<招聘专员|HSM>",
+      "channel": "<InApp|Email>",
+      "rule_id": "<rule_id>",
+      "message": "<...>"
+    }
+  ]
+}
